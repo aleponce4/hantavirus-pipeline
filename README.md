@@ -1,18 +1,20 @@
 # Hantavirus Pipeline
 
-A pipeline for processing and analyzing Hantavirus NGS data, including quality control, mapping, primer removal, variant calling, and visualization.
+A pipeline for processing and analyzing Hantavirus NGS data, including quality control, mapping, variant calling, consensus generation, and visualization.
 
 ## Overview
 
-This pipeline is designed for processing Illumina paired-end sequencing data of Hantavirus genomes. It handles:
+This pipeline is designed for processing Illumina paired-end sequencing data of Hantavirus genomes. It features a two-pass approach with automatic detection of negative samples based on coverage depth. The pipeline handles:
 
 - Quality trimming and adapter removal
 - Primer trimming
 - Reference-based mapping
+- Automatic negative sample detection
 - Metaconsensus generation
 - Variant calling
+- Consensus sequence creation
 - Coverage visualization
-- Alignment visualization
+- Primer evaluation and optimization
 
 ## Installation
 
@@ -25,7 +27,7 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
 
 1. Clone or download the repository:
    ```bash
-   git clone [repository URL]
+   git clone [https://github.com/aleponce4/hantavirus-pipeline]
    cd hantavirus_pipeline
    ```
 
@@ -60,55 +62,90 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
    conda activate De_Novo_pipeline
    ```
 
-2. Run the pipeline on a sample:
+2. Run the pipeline:
    ```bash
-   bash run_pipeline.sh SAMPLE [threads]
+   bash run_pipeline.sh
    ```
-   Where `SAMPLE` is the name of your sample (without the _R1/_R2 suffix) and `threads` is the number of CPU threads to use (default: 4).
 
 3. Alternatively, to run multiple samples sequentially:
    ```bash
    for sample in sample1 sample2 sample3; do
-       bash run_pipeline.sh $sample 8
+       bash run_pipeline.sh
    done
    ```
 
 ### Pipeline Steps
 
-The pipeline will execute the following steps:
+The pipeline executes the following steps:
 
-1. **Preprocessing**: Quality trimming, adapter removal, and primer trimming
-2. **Mapping**: Align reads to reference(s) and generate BAM files
-3. **Variant calling**: Identify SNPs and indels 
-4. **Consensus generation**: Create consensus sequences for each segment
-5. **Visualization**: Generate coverage plots and alignment visualizations
+1. **First Pass Processing**:
+   - Quality trimming, adapter removal, and primer trimming
+   - Alignment to original reference sequences
+   - Variant calling
+   - Consensus generation
 
-### Output Files
+2. **Negative Sample Detection**:
+   - Calculates average coverage for each segment
+   - Samples with average coverage below 50x are classified as negative
+   - Negative samples skip second pass processing
 
-Results are organized in the `results/` directory by sample name:
+3. **Reference Refinement**:
+   - Creates a metaconsensus sequence from all positive samples
 
-- `results/SAMPLE/trimmed/`: Trimmed and processed FASTQ files
-- `results/SAMPLE/alignment/SEGMENT/`: BAM files and statistics
-- `results/SAMPLE/variants/SEGMENT/`: Variant calls (VCF)
-- `results/SAMPLE/consensus/SEGMENT/`: Consensus sequences
-- `results/plots/`: Visualization plots for all samples
+4. **Second Pass Processing** (positive samples only):
+   - Re-alignment to metaconsensus reference
+   - Improved variant calling
+   - Final consensus generation
+   - Comparison between first and second pass results
+
+5. **Visualization and Analysis**:
+   - Coverage plots for positive and negative samples
+   - Alignment visualizations
+   - Consensus comparison metrics
+   
+6. **Primer Evaluation**:
+   - Evaluates primer quality against consensus sequences
+   - Generates improvement suggestions for problematic primers
+   - Creates primer maps and visualizations
+
+### Output Directory Structure
+
+Results are organized in the `results/` directory with the following structure:
+
+- `results/first_pass/` - First pass processing results for all samples
+- `results/second_pass/` - Second pass processing results (positive samples only)
+- `results/negative_samples/` - Data for samples with low coverage
+- `results/trimmed/` - Trimmed reads (used by both passes)
+- `results/plots/` - Coverage and alignment plots
+  - `results/plots/negative_samples/` - Plots for negative samples
+- `results/primer_evaluation/` - Primer evaluation results and suggested improvements
 
 ## Visualization
 
-The pipeline generates two types of visualization:
+The pipeline generates multiple types of visualizations:
 
-1. **Coverage plots**: Shows the read depth across each segment with primer binding sites marked at the top
+1. **Coverage plots**: Shows the read depth across each segment with primer binding sites marked
 2. **Alignment visualizations**: Shows the alignment between original reference and metaconsensus
+3. **Primer maps**: Visualizations of primer binding locations and quality metrics
 
-To view the visualizations, check the `results/plots/` directory.
+## Primer Evaluation
+
+The pipeline includes a primer evaluation module that:
+
+1. Analyzes primer quality metrics (Tm, GC content, hairpins, etc.)
+2. Evaluates primer binding efficiency to consensus sequences
+3. Identifies problematic primers
+4. Generates improved primer sequences when possible
+5. Creates summary reports and visualizations
 
 ## Troubleshooting
 
-- Check log files in the sample directories for error messages
+- Check log files in the `logs/` directory for error messages
 - Ensure input files follow the expected naming conventions
 - Verify reference sequences are properly formatted FASTA files
 - Make sure the conda environment is properly activated before running the pipeline
+- For negative samples, check `results/negative_samples/negative_samples.txt` for the list of samples that were classified as negative
 
 ## License
 
-[Include license information if applicable] 
+This pipeline is provided for research use. Please cite [Citation information] when using this pipeline in your research.
