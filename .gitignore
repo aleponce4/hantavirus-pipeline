@@ -1,0 +1,15 @@
+# Ignore data and results directories
+data/
+data/*
+results/
+results/*
+
+# ignore logs
+logs/
+logs/*
+
+
+
+
+
+
