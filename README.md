@@ -55,6 +55,26 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
 
 3. Place your primer information in `data/primers/Primers.csv` (if using primer trimming)
 
+4. Primer File Format (data/primers/Primers.csv)
+   The pipeline expects a CSV file with the following columns:
+   - Column 1: Primer Name - Using the following naming convention:
+     * SF* or SR* for S segment primers (forward and reverse)
+     * MF* or MR* for M segment primers (forward and reverse)
+     * LF* or LR* for L segment primers (forward and reverse)
+   - Column 2: Region - Genomic position in format like "1-32F" or "452-480R"
+   - Column 3: Sequence - The primer sequence (spaces will be removed)
+   - Additional columns may be present but are not required for basic functionality
+
+   Example header line: 
+   ```
+   F Name,Region,Sequence,Tm,GC%,Amplicon
+   ```
+
+   Example data line:
+   ```
+   SF1,1-32F,TAGTAGTAGACTCCTTGAGAAGCTACT,58.2,40.7,S1
+   ```
+
 ### Running the Pipeline
 
 1. Activate the conda environment:
