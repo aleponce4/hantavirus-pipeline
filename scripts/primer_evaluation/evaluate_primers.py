@@ -465,6 +465,31 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
     # Get the consensus sequence length
     consensus_sequence_length = len(consensus_seq)
     
+    # For M segment, we need to extend the plot to cover the UTR region up to 4205
+    # The CDS ends at position 3682
+    if segment.startswith('M'):
+        plot_sequence_length = 4205
+        cds_end = 3682
+    else:
+        plot_sequence_length = consensus_sequence_length
+        cds_end = None
+    
+    # Adjust figure width based on segment size
+    # Typical segment lengths: S ~1.8kb, M ~3.6kb, L ~6.5kb
+    # Calculate a segment-dependent width multiplier
+    if segment.startswith('S'):
+        width_multiplier = 1.0
+    elif segment.startswith('M'):
+        width_multiplier = 1.5
+    elif segment.startswith('L'):
+        width_multiplier = 2.0
+    else:
+        width_multiplier = 1.0
+    
+    # Base width starts at 15 inches
+    base_width = 15
+    adjusted_width = base_width * width_multiplier
+    
     # Get average coverage data
     average_coverage = get_average_coverage(segment)
     
@@ -472,30 +497,27 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
     if len(average_coverage) == 0:
         has_coverage = False
         fig_height = 3 + 0.2 * len(df)  # Reduced height
-        fig, ax = plt.subplots(1, figsize=(12, fig_height))
+        fig, ax = plt.subplots(1, figsize=(adjusted_width, fig_height))  # Segment-dependent width
         
-        # Create features for the original sequence
+        # Create features for the original sequence - using the standard approach
+        # but with better organization
         features = [
-            GraphicFeature(start=0, end=consensus_sequence_length, strand=0, color="#ffffff", label="Consensus Sequence")
+            GraphicFeature(start=0, end=plot_sequence_length, strand=0, color="#ffffff", label="Consensus")
         ]
         
         # Create a color map for different primer pairs
         primer_colors = plt.cm.tab10.colors
         
-        # Add features for each primer pair
+        # First add all amplicon features
         for i, row in df.iterrows():
             color = primer_colors[i % len(primer_colors)]
             
             try:
-                f_name = row.get('F Name', '')
-                r_name = row.get('Reverse Name', '')
-                
                 # Extract positions from the region fields
                 f_region = row.get('F Region', '')
                 r_region = row.get('R Region', '')
                 
                 # Parse position from region field (e.g., "1-32F" -> start=1, end=32)
-                # Modified to handle suffix like 'F' or 'R'
                 f_match = f_region.split('-')
                 f_start = int(f_match[0])
                 f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
@@ -510,175 +532,254 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
                 r_start -= 1
                 r_end -= 1
                 
-                # Create primer features
-                features.append(
-                    GraphicFeature(start=f_start, end=f_end, strand=1, color=color, label=f"{f_name}")
-                )
+                # Calculate amplicon length
+                amplicon_length = r_end - f_start + 1
                 
-                features.append(
-                    GraphicFeature(start=r_start, end=r_end, strand=-1, color=color, label=f"{r_name}")
-                )
+                # Create a more compact label format
+                if amplicon_length >= 1000:
+                    size_label = f"{amplicon_length/1000:.1f}kb"
+                else:
+                    size_label = f"{amplicon_length}bp"
                 
-                # Create amplicon feature
+                # Create amplicon feature (will be displayed in top lanes)
                 features.append(
-                    GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=10, 
-                                  label=f"Amplicon {i+1} ({r_end-f_start+1}bp)")
+                    GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=12, 
+                                  label=f"A{i+1}({size_label})", fontsize=5, label_position="middle", 
+                                  box_color=color, text_color="white")
                 )
             except Exception as e:
-                print(f"Error plotting primer pair {i+1}: {e}")
-                continue
+                print(f"Error adding amplicon feature for pair {i+1}: {e}")
+        
+        # Then add all primer features
+        for i, row in df.iterrows():
+            color = primer_colors[i % len(primer_colors)]
+            
+            try:
+                f_name = row.get('F Name', '')
+                r_name = row.get('Reverse Name', '')
+                
+                # Extract positions from the region fields
+                f_region = row.get('F Region', '')
+                r_region = row.get('R Region', '')
+                
+                # Parse position from region field
+                f_match = f_region.split('-')
+                f_start = int(f_match[0])
+                f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
+                
+                r_match = r_region.split('-')
+                r_start = int(r_match[0])
+                r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
+                
+                # Adjust 1-based positions to 0-based
+                f_start -= 1
+                f_end -= 1
+                r_start -= 1
+                r_end -= 1
+                
+                # Add forward primer and reverse primer features
+                features.append(
+                    GraphicFeature(start=f_start, end=f_end, strand=1, color=color, label=f_name, fontsize=5)
+                )
+                
+                features.append(
+                    GraphicFeature(start=r_start, end=r_end, strand=-1, color=color, label=r_name, fontsize=5)
+                )
+            except Exception as e:
+                print(f"Error adding primer features for pair {i+1}: {e}")
         
         # Create the GraphicRecord
-        record = GraphicRecord(sequence_length=consensus_sequence_length, features=features)
+        record = GraphicRecord(sequence_length=plot_sequence_length, features=features)
         
         # Plot the GraphicRecord
         record.plot(ax=ax)
-        plt.title("Primer Pairs and Amplicons on Consensus Sequence")
+        ax.set_title(f"Primer Pairs and Amplicons on {segment} Consensus Sequence")
+        
+        # Mark the CDS end with a vertical line for M segment
+        if cds_end is not None:
+            ax.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
+            ax.text(cds_end + 10, 0.95, "3' UTR →", transform=ax.get_xaxis_transform(), 
+                    color='red', fontsize=8, fontweight='bold')
         
     else:
         has_coverage = True
+        # To maintain consistency, always get max_coverage
+        max_coverage = max(average_coverage) * 1.1 if average_coverage else 100
         
-        # Set up figure with 2 subplots - more compact
-        fig_height = 4 + 0.18 * len(df)  # Reduced height
-        fig = plt.figure(figsize=(12, fig_height))
+        # Setup a more complex figure with 2 subplots for coverage and primers
+        fig_height = 5  # Fixed height for the combined plot
         
-        # Use GridSpec to create two subplots with different heights
-        # Increase the size of the coverage plot relative to the primer plot
-        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1.2])
+        # Create figure and gridspec for more control over subplot sizes
+        fig = plt.figure(figsize=(adjusted_width, fig_height))
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 2], hspace=0.1)
         
-        # Coverage plot on top
+        # Set up coverage plot in the top panel
         ax_coverage = fig.add_subplot(gs[0])
         
-        # Plot the average coverage
-        x = np.arange(1, len(average_coverage) + 1)  # 1-based positions
+        # Plot coverage
+        ax_coverage.fill_between(
+            range(1, len(average_coverage) + 1),
+            average_coverage,
+            color="lightgrey",
+            alpha=0.8,
+            label="Coverage"
+        )
         
-        # Fill area under the curve with blue and plot the line
-        ax_coverage.fill_between(x, 0, average_coverage, color='#3366CC', alpha=0.6)
-        ax_coverage.plot(x, average_coverage, '-', color='#1A3C6E', linewidth=1.0)
+        # Add horizontal line at the low coverage threshold
+        LOW_COVERAGE = 10
+        ax_coverage.axhline(y=LOW_COVERAGE, color='red', linestyle='--', 
+                           linewidth=0.8, alpha=0.7, label=f"Low coverage (<{LOW_COVERAGE}x)")
         
-        # Highlight low coverage regions
-        low_coverage_threshold = 10
-        low_cov_mask = average_coverage < low_coverage_threshold
-        if np.any(low_cov_mask):
-            ax_coverage.fill_between(x, 0, average_coverage, where=low_cov_mask, color='#FF9999', alpha=0.8)
+        # Highlight low coverage regions more prominently
+        low_coverage_regions = np.array(average_coverage) < LOW_COVERAGE
+        if np.any(low_coverage_regions):
+            ax_coverage.fill_between(
+                range(1, len(average_coverage) + 1),
+                [LOW_COVERAGE if x < LOW_COVERAGE else 0 for x in average_coverage],
+                color="red",
+                alpha=0.3,
+                label="Dropout regions"
+            )
         
-        # Add a subtle horizontal line at the low coverage threshold
-        ax_coverage.axhline(y=low_coverage_threshold, linestyle='--', color='#FF0000', alpha=0.5, linewidth=0.8)
+        # Add legend
+        ax_coverage.legend(loc='upper right', fontsize=6)
         
         # Format the coverage plot
-        ax_coverage.set_title(f"Average Coverage Across All Samples - {segment}", fontsize=12)
-        ax_coverage.set_ylabel('Coverage', fontsize=10)
+        ax_coverage.set_title(f"Coverage and Primers - {segment}", fontsize=12)
+        ax_coverage.set_ylabel("Coverage", fontsize=8)
         
-        # Remove top and right spines
-        ax_coverage.spines['top'].set_visible(False)
-        ax_coverage.spines['right'].set_visible(False)
-        
-        # Add light grid lines
-        ax_coverage.grid(True, linestyle='--', alpha=0.7, which='major')
-        
-        # Set y-ticks and limits
-        max_coverage = np.max(average_coverage) if np.max(average_coverage) > 0 else 100
-        ax_coverage.set_ylim([0, max_coverage * 1.1])
-        ax_coverage.yaxis.set_major_locator(MaxNLocator(nbins=5))
-        
-        # Set up primer plot in the bottom panel
-        ax_primers = fig.add_subplot(gs[1])
-        
-        # Create features for the original sequence
-        features = [
-            GraphicFeature(start=0, end=consensus_sequence_length, strand=0, color="#ffffff", label="Consensus Sequence")
-        ]
-        
-        # Create a color map for different primer pairs
-        primer_colors = plt.cm.tab10.colors
-        
-        # Add features for each primer pair
-        for i, row in df.iterrows():
-            color = primer_colors[i % len(primer_colors)]
+        # Clean up the coverage plot
+        for spine in ['top', 'right']:
+            ax_coverage.spines[spine].set_visible(False)
             
-            try:
-                f_name = row.get('F Name', '')
-                r_name = row.get('Reverse Name', '')
-                
-                # Extract positions from the region fields
-                f_region = row.get('F Region', '')
-                r_region = row.get('R Region', '')
-                
-                # Parse position from region field (e.g., "1-32F" -> start=1, end=32)
-                # Modified to handle suffix like 'F' or 'R'
-                f_match = f_region.split('-')
-                f_start = int(f_match[0])
-                f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
-                
-                r_match = r_region.split('-')
-                r_start = int(r_match[0])
-                r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
-                
-                # Adjust 1-based positions to 0-based
-                f_start -= 1
-                f_end -= 1
-                r_start -= 1
-                r_end -= 1
-                
-                # Create primer features with shortened labels for compactness
-                features.append(
-                    GraphicFeature(start=f_start, end=f_end, strand=1, color=color, label=f_name)
-                )
-                
-                features.append(
-                    GraphicFeature(start=r_start, end=r_end, strand=-1, color=color, label=r_name)
-                )
-                
-                # Create amplicon feature with reduced thickness
-                features.append(
-                    GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=4, 
-                                  label=f"A{i+1}")  # Shorter amplicon label
-                )
-                
-                # Add markers to coverage plot for primers
-                if has_coverage:
-                    # Draw forward primer marker on coverage plot
-                    if f_start < len(average_coverage):
-                        ax_coverage.plot(f_start + 1, max_coverage, marker='^', color=color, 
-                                       markersize=8, markeredgecolor='black', alpha=0.8)
-                        ax_coverage.axvline(x=f_start + 1, color=color, linestyle=':', alpha=0.3, linewidth=0.8)
-                    
-                    # Draw reverse primer marker on coverage plot
-                    if r_end < len(average_coverage):
-                        ax_coverage.plot(r_end + 1, max_coverage, marker='v', color=color, 
-                                       markersize=8, markeredgecolor='black', alpha=0.8)
-                        ax_coverage.axvline(x=r_end + 1, color=color, linestyle=':', alpha=0.3, linewidth=0.8)
-                
-            except Exception as e:
-                print(f"Error plotting primer pair {i+1}: {e}")
-                continue
-        
-        # Create the GraphicRecord for primers
-        record = GraphicRecord(sequence_length=consensus_sequence_length, features=features)
-        
-        # Plot the GraphicRecord with modifications to make it compact
-        ax_record = record.plot(ax=ax_primers)
-        
-        # Adjust the plot to be more compact
-        ax_primers.set_title("Primer Pairs and Amplicons", fontsize=12)  # Shorter title
-        
-        # Remove x-axis labels from the top panel to save space
+        # Set y-axis limit to keep low coverage visible but also see high coverage peaks
+        ax_coverage.set_ylim([0, max_coverage])
+        ax_coverage.set_xlim([1, plot_sequence_length])
         ax_coverage.set_xlabel('')
-        ax_coverage.set_xticklabels([])
+        ax_coverage.set_xlim([1, plot_sequence_length])
+        ax_primers.set_xlim([1, plot_sequence_length])
         
-        # Link the x-axes of both plots
-        ax_coverage.set_xlim([1, consensus_sequence_length])
-        ax_primers.set_xlim([1, consensus_sequence_length])
+        # Mark the CDS end with a vertical line for M segment
+        if cds_end is not None:
+            ax_coverage.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
+            ax_coverage.text(cds_end + 10, max_coverage * 0.9, "3' UTR →", 
+                    color='red', fontsize=8, fontweight='bold')
+            ax_primers.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
+            ax_primers.text(cds_end + 10, 0.95, "3' UTR →", transform=ax_primers.get_xaxis_transform(), 
+                    color='red', fontsize=8, fontweight='bold')
         
-        # Adjust the spacing between features to be tighter
-        if hasattr(ax_record, 'feature_locations'):
-            # Manually reduce the spacing between features if possible
-            for spine in ['top', 'right']:
-                ax_primers.spines[spine].set_visible(False)
+        # Clean up spines
+        for spine in ['top', 'right']:
+            ax_primers.spines[spine].set_visible(False)
     
     # Final formatting and save
     plt.tight_layout(h_pad=0.5)  # Reduce padding between subplots
     plt.savefig(output_path, dpi=300, bbox_inches='tight')  # Crop any extra whitespace
+    
+    # Also save as SVG for vector editing
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg', bbox_inches='tight')
+    plt.close()
+    
+    # Now create a second plot with JUST the amplicons (no primer arrows and labels)
+    plot_amplicons_only(df, consensus_seq, output_path.replace('.png', '_amplicons_only.png'), segment, plot_sequence_length, cds_end)
+
+def plot_amplicons_only(df, consensus_seq, output_path, segment, plot_sequence_length, cds_end=None):
+    """Create a simplified plot with just the amplicons, no primer arrows or labels"""
+    
+    # Adjust figure width based on segment size
+    if segment.startswith('S'):
+        width_multiplier = 1.0
+    elif segment.startswith('M'):
+        width_multiplier = 1.5
+    elif segment.startswith('L'):
+        width_multiplier = 2.0
+    else:
+        width_multiplier = 1.0
+    
+    # Base width starts at 15 inches
+    base_width = 15
+    adjusted_width = base_width * width_multiplier
+    
+    # Setup the figure
+    fig_height = 3  # Reduced height for amplicons only
+    fig, ax = plt.subplots(1, figsize=(adjusted_width, fig_height))
+    
+    # Create features for the consensus sequence
+    features = [
+        GraphicFeature(start=0, end=plot_sequence_length, strand=0, color="#ffffff", label="Consensus")
+    ]
+    
+    # Create a color map for different primer pairs
+    primer_colors = plt.cm.tab10.colors
+    
+    # Add all amplicon features
+    for i, row in df.iterrows():
+        color = primer_colors[i % len(primer_colors)]
+        
+        try:
+            # Extract positions from the region fields
+            f_region = row.get('F Region', '')
+            r_region = row.get('R Region', '')
+            
+            # Parse position from region field
+            f_match = f_region.split('-')
+            f_start = int(f_match[0])
+            f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
+            
+            r_match = r_region.split('-')
+            r_start = int(r_match[0])
+            r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
+            
+            # Adjust 1-based positions to 0-based
+            f_start -= 1
+            f_end -= 1
+            r_start -= 1
+            r_end -= 1
+            
+            # Calculate amplicon length
+            amplicon_length = r_end - f_start + 1
+            
+            # Create a more compact label format
+            if amplicon_length >= 1000:
+                size_label = f"{amplicon_length/1000:.1f}kb"
+            else:
+                size_label = f"{amplicon_length}bp"
+            
+            # Create amplicon feature with increased thickness for better visibility
+            features.append(
+                GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=14, 
+                              label=f"A{i+1}({size_label})", fontsize=5, label_position="middle", 
+                              box_color=color, text_color="white")
+            )
+        except Exception as e:
+            print(f"Error adding amplicon feature for pair {i+1}: {e}")
+    
+    # Create and plot the GraphicRecord
+    record = GraphicRecord(sequence_length=plot_sequence_length, features=features)
+    record.plot(ax=ax)
+    
+    # Set title and format
+    ax.set_title(f"Amplicons Only - {segment} Consensus Sequence")
+    
+    # Mark the CDS end with a vertical line for M segment
+    if cds_end is not None:
+        ax.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
+        ax.text(cds_end + 10, 0.95, "3' UTR →", transform=ax.get_xaxis_transform(), 
+                color='red', fontsize=8, fontweight='bold')
+    
+    # Clean up spines
+    for spine in ['top', 'right']:
+        ax.spines[spine].set_visible(False)
+    
+    # Save the plot
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    
+    # Also save as SVG
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg', bbox_inches='tight')
+    
     plt.close()
 
 def extract_positions(row):
@@ -854,7 +955,7 @@ def main():
     df['Quality_Flag'] = df.apply(check_primer_quality, axis=1)
     
     # Plot primers to target sequence
-    print("Generating primer map visualization...")
+    print("Generating primer map visualizations...")
     plot_output = os.path.join(args.output, f"{args.segment}_primer_map.png")
     plot_primers_to_target(df, consensus_seq, plot_output, args.segment)
     
@@ -872,7 +973,15 @@ def main():
         for _, row in passing_primers.iterrows():
             print(f"  - {row['F Name']} / {row['Reverse Name']}")
     
-    print(f"\nPrimer map visualization saved to {plot_output}")
+    svg_plot_output = plot_output.replace('.png', '.svg')
+    amplicons_only_output = plot_output.replace('.png', '_amplicons_only.png')
+    amplicons_only_svg = amplicons_only_output.replace('.png', '.svg')
+    
+    print(f"\nPrimer map visualizations saved to:")
+    print(f"  - {plot_output} (PNG)")
+    print(f"  - {svg_plot_output} (SVG)")
+    print(f"  - {amplicons_only_output} (PNG, amplicons only)")
+    print(f"  - {amplicons_only_svg} (SVG, amplicons only)")
 
 if __name__ == "__main__":
     main() 

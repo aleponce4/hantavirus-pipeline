@@ -54,29 +54,70 @@ python scripts/primer_evaluation/improve_primers.py \
     --blast_db "$BLAST_DB" \
     2>&1 | tee -a $PRIMER_EVAL_LOG
 
-# Add code for M and L segments when available
-# Currently only processing S segment as per the user's instruction
+# Process M segment
+echo -e "\nEvaluating M segment primers..." | tee -a $PRIMER_EVAL_LOG
+BLAST_DB="data/blast_db/M_segment_blast_db"
+CONSENSUS="data/references/M_segment/metaconsensus.fasta"
+
+python scripts/primer_evaluation/evaluate_primers.py \
+    --primers "$PRIMERS_CSV" \
+    --segment M_segment \
+    --blast_db "$BLAST_DB" \
+    --consensus "$CONSENSUS" \
+    --output "$RESULTS_DIR" \
+    2>&1 | tee -a $PRIMER_EVAL_LOG
+
+# Generate improvement suggestions for the M segment primers
+echo -e "\nGenerating improvement suggestions for M segment primers..." | tee -a $PRIMER_EVAL_LOG
+python scripts/primer_evaluation/improve_primers.py \
+    --eval_report "$RESULTS_DIR/M_segment_primer_evaluation.csv" \
+    --reference "$CONSENSUS" \
+    --output "$RESULTS_DIR/M_segment_primer_improvements.csv" \
+    --blast_db "$BLAST_DB" \
+    2>&1 | tee -a $PRIMER_EVAL_LOG
+
+# Add code for L segment when available
 
 echo -e "\nPrimer evaluation completed at $(date)" | tee -a $PRIMER_EVAL_LOG
 echo "Results available in $RESULTS_DIR"
 
 # Summarize improvement suggestions
+echo -e "\n=== PRIMER IMPROVEMENT SUMMARY ===" | tee -a $PRIMER_EVAL_LOG
+
+# S segment summary
 if [ -f "$RESULTS_DIR/S_segment_primer_improvements.csv" ]; then
     IMPROVED_COUNT=$(wc -l < "$RESULTS_DIR/S_segment_primer_improvements.csv")
     # Subtract 1 for the header line
     if [ $IMPROVED_COUNT -gt 1 ]; then
         IMPROVED_COUNT=$((IMPROVED_COUNT - 1))
-        echo -e "\n=== PRIMER IMPROVEMENT SUMMARY ===" | tee -a $PRIMER_EVAL_LOG
-        echo "Generated improvements for $IMPROVED_COUNT primers." | tee -a $PRIMER_EVAL_LOG
-        echo "Full details including statistics available in:" | tee -a $PRIMER_EVAL_LOG
-        echo "$RESULTS_DIR/S_segment_primer_improvements.csv" | tee -a $PRIMER_EVAL_LOG
+        echo "S segment: Generated improvements for $IMPROVED_COUNT primers." | tee -a $PRIMER_EVAL_LOG
+        echo "Full details in: $RESULTS_DIR/S_segment_primer_improvements.csv" | tee -a $PRIMER_EVAL_LOG
         
         # Generate a quick summary table of changed primers
         if command -v column > /dev/null; then
-            echo -e "\nSummary of changed primers:" | tee -a $PRIMER_EVAL_LOG
+            echo -e "\nSummary of changed S segment primers:" | tee -a $PRIMER_EVAL_LOG
             (echo "Primer,Type,Changes,Length Δ"; tail -n +2 "$RESULTS_DIR/S_segment_primer_improvements.csv" | cut -d, -f1,2,15,16 | sort -t, -k3,3nr) | column -t -s, | tee -a $PRIMER_EVAL_LOG
         fi
     else
-        echo "No primer improvements were needed - all primers pass quality checks." | tee -a $PRIMER_EVAL_LOG
+        echo "S segment: No primer improvements needed - all primers pass quality checks." | tee -a $PRIMER_EVAL_LOG
+    fi
+fi
+
+# M segment summary
+if [ -f "$RESULTS_DIR/M_segment_primer_improvements.csv" ]; then
+    IMPROVED_COUNT=$(wc -l < "$RESULTS_DIR/M_segment_primer_improvements.csv")
+    # Subtract 1 for the header line
+    if [ $IMPROVED_COUNT -gt 1 ]; then
+        IMPROVED_COUNT=$((IMPROVED_COUNT - 1))
+        echo -e "\nM segment: Generated improvements for $IMPROVED_COUNT primers." | tee -a $PRIMER_EVAL_LOG
+        echo "Full details in: $RESULTS_DIR/M_segment_primer_improvements.csv" | tee -a $PRIMER_EVAL_LOG
+        
+        # Generate a quick summary table of changed primers
+        if command -v column > /dev/null; then
+            echo -e "\nSummary of changed M segment primers:" | tee -a $PRIMER_EVAL_LOG
+            (echo "Primer,Type,Changes,Length Δ"; tail -n +2 "$RESULTS_DIR/M_segment_primer_improvements.csv" | cut -d, -f1,2,15,16 | sort -t, -k3,3nr) | column -t -s, | tee -a $PRIMER_EVAL_LOG
+        fi
+    else
+        echo "M segment: No primer improvements needed - all primers pass quality checks." | tee -a $PRIMER_EVAL_LOG
     fi
 fi 
