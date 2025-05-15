@@ -145,7 +145,7 @@ Results are organized in the `results/` directory with the following structure:
 
 ## Variant Calling Improvements
 
-The pipeline implements a sophisticated two-pass approach to variant calling:
+The pipeline implements a two-pass approach to variant calling:
 
 1. In the first pass, reads are mapped directly to the original reference
 2. In the second pass:
