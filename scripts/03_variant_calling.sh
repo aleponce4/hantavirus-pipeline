@@ -2,7 +2,7 @@
 # Variant calling script using iVar with primer masking and amino acid annotations
 
 sample=$1
-threads=4  
+threads=${LOFREQ_THREADS:-4}  # Use environment variable if set, otherwise default to 4
 
 # Source the configuration file
 source ./config.sh

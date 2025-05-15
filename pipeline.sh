@@ -60,18 +60,39 @@ cd ../../
 TOTAL_THREADS=$(($(nproc) - 2))
 echo "Total available CPU threads: ${TOTAL_THREADS}"
 
-# Different tools have different optimal thread usage:
-# - Trim Galore: max 8 cores recommended
-# - BWA: Can use many cores effectively
-# - Samtools: Can use many cores effectively  
-# - LoFreq: Use 8 threads (hardcoded in script)
-# - MAFFT: Can use many cores effectively
-
-TRIM_THREADS=$(( TOTAL_THREADS > 8 ? 8 : TOTAL_THREADS ))
-BWA_THREADS=$TOTAL_THREADS
-SAMTOOLS_THREADS=$TOTAL_THREADS
-LOFREQ_THREADS=4  # Fixed at 4
-MAFFT_THREADS=$TOTAL_THREADS
+# HPC-optimized thread allocation
+# For high core count systems (>24 cores), we use a different allocation strategy
+if [ $TOTAL_THREADS -gt 24 ]; then
+    # For HPC environment (many cores available)
+    echo "Detected high-core system, using HPC-optimized thread allocation"
+    
+    # Maximum concurrent samples to process (on a 48-core system, 3 samples with 16 threads is optimal)
+    MAX_CONCURRENT_SAMPLES=3
+    
+    # Tool-specific thread allocation
+    TRIM_THREADS=8                            # Trim Galore doesn't scale well beyond 8
+    BWA_THREADS=16                            # BWA scales well to ~16 threads per sample
+    SAMTOOLS_THREADS=8                        # Samtools for sorting/indexing
+    LOFREQ_THREADS=8                          # Increased from 4
+    MAFFT_THREADS=$TOTAL_THREADS              # MAFFT can use all cores effectively
+    
+    # Enable sample-level parallelism for first and second pass phases
+    PARALLEL_SAMPLES=true
+else
+    # For workstation environment (limited cores)
+    echo "Using workstation-optimized thread allocation"
+    
+    # Original thread allocation
+    TRIM_THREADS=$(( TOTAL_THREADS > 8 ? 8 : TOTAL_THREADS ))
+    BWA_THREADS=$TOTAL_THREADS
+    SAMTOOLS_THREADS=$TOTAL_THREADS
+    LOFREQ_THREADS=4  # Fixed at 4
+    MAFFT_THREADS=$TOTAL_THREADS
+    
+    # Disable sample-level parallelism for limited core systems
+    PARALLEL_SAMPLES=false
+    MAX_CONCURRENT_SAMPLES=1
+fi
 
 export TRIM_THREADS BWA_THREADS SAMTOOLS_THREADS LOFREQ_THREADS MAFFT_THREADS
 
@@ -81,6 +102,8 @@ echo "  - BWA: ${BWA_THREADS} threads"
 echo "  - Samtools: ${SAMTOOLS_THREADS} threads"
 echo "  - LoFreq: ${LOFREQ_THREADS} threads"
 echo "  - MAFFT: ${MAFFT_THREADS} threads"
+echo "  - Sample-level parallelism: ${PARALLEL_SAMPLES}"
+echo "  - Max concurrent samples: ${MAX_CONCURRENT_SAMPLES}"
 
 echo "===== FIRST PASS: Using original reference ====="
 
@@ -99,38 +122,114 @@ for segment in L_segment M_segment S_segment; do
 done
 
 # Pipeline steps - FIRST PASS
-for sample in $samples; do
-    echo "Processing sample (first pass): $sample"
+if [ "$PARALLEL_SAMPLES" = true ]; then
+    # Process samples in parallel for HPC environments
+    echo "Processing samples in parallel (first pass)"
     
-    # Create results directory for this sample (first pass)
-    mkdir -p results/first_pass/$sample
+    # Create a temp directory for job tracking
+    mkdir -p .jobs
+    rm -f .jobs/first_pass_*.done
     
-    # Step 1: Preprocessing - Trim raw reads (we only do this once)
-    # Store in a common location both passes can access
-    mkdir -p results/trimmed/$sample
-    echo "  Starting preprocessing for $sample"
-    (echo "==== Processing sample: $sample ====" >> $PREPROCESSING_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && OUT_DIR=results/trimmed/$sample bash scripts/01_preprocessing.sh $sample ${TRIM_THREADS}" >> $PREPROCESSING_LOG 2>&1
-    echo "  Completed preprocessing for $sample"
+    # Launch samples in parallel with a maximum number of concurrent jobs
+    sample_count=0
+    for sample in $samples; do
+        echo "Launching processing for sample (first pass): $sample"
+        
+        # Create results directory for this sample (first pass)
+        mkdir -p results/first_pass/$sample
+        mkdir -p results/trimmed/$sample
+        
+        # Launch background job for this sample's first pass
+        (
+            echo "Processing sample (first pass): $sample"
+            
+            # Step 1: Preprocessing - Trim raw reads (we only do this once)
+            echo "  Starting preprocessing for $sample"
+            (echo "==== Processing sample: $sample ====" >> $PREPROCESSING_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && OUT_DIR=results/trimmed/$sample bash scripts/01_preprocessing.sh $sample ${TRIM_THREADS}" >> $PREPROCESSING_LOG 2>&1
+            echo "  Completed preprocessing for $sample"
+            
+            # Step 2: Reference alignment
+            echo "  Starting reference alignment for $sample (first pass)"
+            (echo "==== Processing sample: $sample (first pass) ====" >> $ALIGNMENT_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $ALIGNMENT_LOG 2>&1
+            echo "  Completed reference alignment for $sample (first pass)"
+            
+            # Step 3: Variant calling
+            echo "  Starting variant calling for $sample (first pass)"
+            (echo "==== Processing sample: $sample (first pass) ====" >> $VARIANT_CALLING_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/03_variant_calling.sh $sample" >> $VARIANT_CALLING_LOG 2>&1
+            echo "  Completed variant calling for $sample (first pass)"
+            
+            # Step 4: Consensus generation
+            echo "  Starting consensus generation for $sample (first pass)"
+            (echo "==== Processing sample: $sample (first pass) ====" >> $CONSENSUS_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/04_consensus_generation.sh $sample" >> $CONSENSUS_LOG 2>&1
+            echo "  Completed consensus generation for $sample (first pass)"
+            
+            # Create "done" marker file
+            touch .jobs/first_pass_${sample}.done
+        ) &
+        
+        # Increment counter and check if we should wait
+        sample_count=$((sample_count + 1))
+        
+        if [ $sample_count -ge $MAX_CONCURRENT_SAMPLES ]; then
+            echo "Reached maximum concurrent samples ($MAX_CONCURRENT_SAMPLES), waiting for a job to complete..."
+            wait -n
+            sample_count=$((sample_count - 1))
+        fi
+    done
     
-    # Step 2: Reference alignment (first pass - using original reference)
-    echo "  Starting reference alignment for $sample (first pass)"
-    (echo "==== Processing sample: $sample (first pass) ====" >> $ALIGNMENT_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $ALIGNMENT_LOG 2>&1
-    echo "  Completed reference alignment for $sample (first pass)"
+    # Wait for all remaining first pass jobs to complete
+    echo "Waiting for all first pass jobs to complete..."
+    wait
     
-    # Step 3: Variant calling (first pass)
-    echo "  Starting variant calling for $sample (first pass)"
-    (echo "==== Processing sample: $sample (first pass) ====" >> $VARIANT_CALLING_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/03_variant_calling.sh $sample" >> $VARIANT_CALLING_LOG 2>&1
-    echo "  Completed variant calling for $sample (first pass)"
+    # Verify all samples completed
+    for sample in $samples; do
+        if [ ! -f ".jobs/first_pass_${sample}.done" ]; then
+            echo "ERROR: First pass processing failed for sample $sample"
+            exit 1
+        fi
+    done
     
-    # Step 4: Consensus generation (first pass)
-    echo "  Starting consensus generation for $sample (first pass)"
-    (echo "==== Processing sample: $sample (first pass) ====" >> $CONSENSUS_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/04_consensus_generation.sh $sample" >> $CONSENSUS_LOG 2>&1
-    echo "  Completed consensus generation for $sample (first pass)"
-done
+    echo "All first pass jobs completed successfully"
+else
+    # Process samples sequentially for workstation environments
+    for sample in $samples; do
+        echo "Processing sample (first pass): $sample"
+        
+        # Same sequential processing code as before
+        # Create results directory for this sample (first pass)
+        mkdir -p results/first_pass/$sample
+        
+        # Step 1: Preprocessing - Trim raw reads (we only do this once)
+        # Store in a common location both passes can access
+        mkdir -p results/trimmed/$sample
+        echo "  Starting preprocessing for $sample"
+        (echo "==== Processing sample: $sample ====" >> $PREPROCESSING_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && OUT_DIR=results/trimmed/$sample bash scripts/01_preprocessing.sh $sample ${TRIM_THREADS}" >> $PREPROCESSING_LOG 2>&1
+        echo "  Completed preprocessing for $sample"
+        
+        # Step 2: Reference alignment (first pass - using original reference)
+        echo "  Starting reference alignment for $sample (first pass)"
+        (echo "==== Processing sample: $sample (first pass) ====" >> $ALIGNMENT_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $ALIGNMENT_LOG 2>&1
+        echo "  Completed reference alignment for $sample (first pass)"
+        
+        # Step 3: Variant calling (first pass)
+        echo "  Starting variant calling for $sample (first pass)"
+        (echo "==== Processing sample: $sample (first pass) ====" >> $VARIANT_CALLING_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/03_variant_calling.sh $sample" >> $VARIANT_CALLING_LOG 2>&1
+        echo "  Completed variant calling for $sample (first pass)"
+        
+        # Step 4: Consensus generation (first pass)
+        echo "  Starting consensus generation for $sample (first pass)"
+        (echo "==== Processing sample: $sample (first pass) ====" >> $CONSENSUS_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=true bash scripts/04_consensus_generation.sh $sample" >> $CONSENSUS_LOG 2>&1
+        echo "  Completed consensus generation for $sample (first pass)"
+    done
+fi
 
 # Detect negative samples based on coverage
 echo "Detecting negative samples..."
@@ -174,44 +273,116 @@ echo "Completed reference refinement (metaconsensus created in data/references/*
 echo "===== SECOND PASS: Using metaconsensus reference ====="
 
 # Pipeline steps - SECOND PASS
-for sample in $samples; do
-    # Skip negative samples in second pass - using improved array checking
-    is_negative=false
-    for neg in "${negative_samples[@]}"; do
-        if [[ "$sample" == "$neg" ]]; then
-            is_negative=true
-            break
+if [ "$PARALLEL_SAMPLES" = true ]; then
+    # Process samples in parallel for HPC environments
+    echo "Processing samples in parallel (second pass)"
+    
+    # Clean up job tracking
+    rm -f .jobs/second_pass_*.done
+    
+    # Launch samples in parallel with a maximum number of concurrent jobs
+    sample_count=0
+    for sample in $samples; do
+        # Skip negative samples in second pass
+        is_negative=false
+        for neg in "${negative_samples[@]}"; do
+            if [[ "$sample" == "$neg" ]]; then
+                is_negative=true
+                break
+            fi
+        done
+        
+        if [ "$is_negative" = true ]; then
+            echo "Skipping second pass for negative sample: $sample"
+            continue
+        fi
+        
+        echo "Launching processing for sample (second pass): $sample"
+        
+        # Create results directory for this sample (second pass)
+        mkdir -p results/second_pass/$sample
+        
+        # Launch background job for this sample's second pass
+        (
+            echo "Processing sample (second pass): $sample"
+            
+            # Step 2: Reference alignment (second pass - using metaconsensus)
+            echo "  Starting reference alignment for $sample (second pass)"
+            (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
+            echo "  Completed reference alignment for $sample (second pass)"
+            
+            # Step 3: Variant calling (second pass)
+            echo "  Starting variant calling for $sample (second pass)"
+            (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
+            echo "  Completed variant calling for $sample (second pass)"
+            
+            # Step 4: Consensus generation (second pass)
+            echo "  Starting consensus generation for $sample (second pass)"
+            (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
+            echo "  Completed consensus generation for $sample (second pass)"
+            
+            # Create "done" marker file
+            touch .jobs/second_pass_${sample}.done
+        ) &
+        
+        # Increment counter and check if we should wait
+        sample_count=$((sample_count + 1))
+        
+        if [ $sample_count -ge $MAX_CONCURRENT_SAMPLES ]; then
+            echo "Reached maximum concurrent samples ($MAX_CONCURRENT_SAMPLES), waiting for a job to complete..."
+            wait -n
+            sample_count=$((sample_count - 1))
         fi
     done
     
-    if [ "$is_negative" = true ]; then
-        echo "Skipping second pass for negative sample: $sample"
-        continue
-    fi
+    # Wait for all remaining second pass jobs to complete
+    echo "Waiting for all second pass jobs to complete..."
+    wait
+else
+    # Process samples sequentially for workstation environments
+    for sample in $samples; do
+        # Same sequential processing code as before
+        # Skip negative samples in second pass - using improved array checking
+        is_negative=false
+        for neg in "${negative_samples[@]}"; do
+            if [[ "$sample" == "$neg" ]]; then
+                is_negative=true
+                break
+            fi
+        done
+        
+        if [ "$is_negative" = true ]; then
+            echo "Skipping second pass for negative sample: $sample"
+            continue
+        fi
 
-    echo "Processing sample (second pass): $sample"
-    
-    # Create results directory for this sample (second pass)
-    mkdir -p results/second_pass/$sample
-    
-    # Step 2: Reference alignment (second pass - using metaconsensus)
-    echo "  Starting reference alignment for $sample (second pass)"
-    (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
-    echo "  Completed reference alignment for $sample (second pass)"
-    
-    # Step 3: Variant calling (second pass)
-    echo "  Starting variant calling for $sample (second pass)"
-    (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
-    echo "  Completed variant calling for $sample (second pass)"
-    
-    # Step 4: Consensus generation (second pass)
-    echo "  Starting consensus generation for $sample (second pass)"
-    (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-    bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
-    echo "  Completed consensus generation for $sample (second pass)"
-done
+        echo "Processing sample (second pass): $sample"
+        
+        # Create results directory for this sample (second pass)
+        mkdir -p results/second_pass/$sample
+        
+        # Step 2: Reference alignment (second pass - using metaconsensus)
+        echo "  Starting reference alignment for $sample (second pass)"
+        (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
+        echo "  Completed reference alignment for $sample (second pass)"
+        
+        # Step 3: Variant calling (second pass)
+        echo "  Starting variant calling for $sample (second pass)"
+        (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
+        echo "  Completed variant calling for $sample (second pass)"
+        
+        # Step 4: Consensus generation (second pass)
+        echo "  Starting consensus generation for $sample (second pass)"
+        (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
+        echo "  Completed consensus generation for $sample (second pass)"
+    done
+fi
 
 # Step 6: Generate summary plots and analyses
 echo "Generating summary plots and analyses"

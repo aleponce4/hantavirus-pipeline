@@ -95,6 +95,51 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
    done
    ```
 
+### HPC Usage
+
+The pipeline includes optimizations for high-performance computing (HPC) environments:
+
+1. **Automatic Resource Detection**:
+   - The pipeline automatically detects systems with >24 cores and enables HPC mode
+   - Thread allocation is optimized for different tools based on their scaling characteristics
+
+2. **Sample-Level Parallelism**:
+   - On HPC systems, multiple samples will be processed concurrently
+   - Default configuration processes 3 samples simultaneously on a 48-core system
+   - Each sample uses optimized thread counts for specific tools:
+     * BWA: 16 threads per sample
+     * Samtools: 8 threads per sample 
+     * LoFreq: 8 threads per sample
+     * Trim Galore: 8 threads per sample
+     * MAFFT: All available threads (during metaconsensus generation)
+
+3. **Manual Configuration**:
+   - Edit the pipeline.sh file to adjust MAX_CONCURRENT_SAMPLES and thread counts
+   - For systems with more RAM, you can increase concurrent samples
+   - For memory-limited systems, reduce threads per tool
+
+4. **Job Management**:
+   - The pipeline manages subprocesses automatically
+   - Limits concurrency to prevent system overload
+   - Waits for jobs to complete before moving to the next pipeline phase
+   - Creates job tracking markers in the .jobs/ directory
+
+5. **HPC Job Submission Example**:
+   ```bash
+   # Example SLURM job submission script
+   #SBATCH --job-name=hantavirus
+   #SBATCH --nodes=1
+   #SBATCH --ntasks=1
+   #SBATCH --cpus-per-task=48
+   #SBATCH --mem=180G
+   #SBATCH --time=24:00:00
+   
+   module load conda
+   conda activate De_Novo_pipeline
+   cd /path/to/hantavirus_pipeline
+   bash run_pipeline.sh
+   ```
+
 ### Pipeline Steps
 
 The pipeline executes the following steps:

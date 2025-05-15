@@ -3,6 +3,8 @@
 # Raw data
 data/raw_reads/*
 !data/raw_reads/.gitkeep
+data/reads_backup/
+data/blast_db/
 
 # References
 data/references/*
@@ -46,6 +48,13 @@ results/primer_evaluation/*
 # Log files
 logs/*
 !logs/.gitkeep
+scripts/logs/
+
+# Job tracking
+.jobs/
+
+# Tools directory (often contains large binaries)
+tools/
 
 # Temporary files
 *.tmp

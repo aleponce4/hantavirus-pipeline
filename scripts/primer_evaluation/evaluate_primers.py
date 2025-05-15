@@ -324,9 +324,9 @@ def check_primer_quality(row):
         problems.append(f'Reverse Primer BLAST E-value too high: {row["R_BLAST_E_Value"]}')
     
     # Check Gibbs Free Energy
-    if row['F_Gibbs_Free_Energy'] < -6:
+    if row['F_Gibbs_Free_Energy'] < -8:
         problems.append(f'Forward Primer Gibbs Free Energy too low: {row["F_Gibbs_Free_Energy"]:.2f} kcal/mol')
-    if row['R_Gibbs_Free_Energy'] < -6:
+    if row['R_Gibbs_Free_Energy'] < -8:
         problems.append(f'Reverse Primer Gibbs Free Energy too low: {row["R_Gibbs_Free_Energy"]:.2f} kcal/mol')
     
     # Check binding site match if data is available
@@ -360,22 +360,52 @@ def find_bam_files(segment):
     """Find all BAM files for a specific segment"""
     bam_files = []
     
-    # Look in results directory for sample subdirectories
+    # Look in both first_pass and second_pass directories
     results_path = os.path.join(BASE_DIR, 'results')
-    for sample_dir in os.listdir(results_path):
-        # Skip special directories
-        if sample_dir in ['plots', 'first_pass', 'primer_evaluation'] or not os.path.isdir(os.path.join(results_path, sample_dir)):
-            continue
-        
-        # Check for alignment directory for this segment
-        align_dir = os.path.join(results_path, sample_dir, 'alignment', segment)
-        if not os.path.isdir(align_dir):
-            continue
-        
-        # Look for BAM file
-        bam_file = os.path.join(align_dir, f"{sample_dir}.bam")
-        if os.path.exists(bam_file):
-            bam_files.append(bam_file)
+    
+    # Check first_pass directory
+    first_pass_path = os.path.join(results_path, 'first_pass')
+    if os.path.exists(first_pass_path):
+        for sample_dir in os.listdir(first_pass_path):
+            # Skip non-directory entries
+            if not os.path.isdir(os.path.join(first_pass_path, sample_dir)):
+                continue
+            
+            # Check for alignment directory for this segment
+            align_dir = os.path.join(first_pass_path, sample_dir, 'alignment', segment)
+            if not os.path.isdir(align_dir):
+                continue
+            
+            # Look for BAM file
+            bam_file = os.path.join(align_dir, f"{sample_dir}.bam")
+            if os.path.exists(bam_file):
+                bam_files.append(bam_file)
+    
+    # Check second_pass directory
+    second_pass_path = os.path.join(results_path, 'second_pass')
+    if os.path.exists(second_pass_path):
+        for sample_dir in os.listdir(second_pass_path):
+            # Skip non-directory entries
+            if not os.path.isdir(os.path.join(second_pass_path, sample_dir)):
+                continue
+            
+            # Check for alignment directory for this segment
+            align_dir = os.path.join(second_pass_path, sample_dir, 'alignment', segment)
+            if not os.path.isdir(align_dir):
+                continue
+            
+            # Look for BAM file
+            bam_file = os.path.join(align_dir, f"{sample_dir}.bam")
+            if os.path.exists(bam_file):
+                bam_files.append(bam_file)
+    
+    # Print debug information
+    if bam_files:
+        print(f"Found {len(bam_files)} BAM files for {segment}:")
+        for bam in bam_files:
+            print(f"  - {bam}")
+    else:
+        print(f"No BAM files found for {segment}")
     
     return bam_files
 
@@ -465,14 +495,9 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
     # Get the consensus sequence length
     consensus_sequence_length = len(consensus_seq)
     
-    # For M segment, we need to extend the plot to cover the UTR region up to 4205
-    # The CDS ends at position 3682
-    if segment.startswith('M'):
-        plot_sequence_length = 4205
-        cds_end = 3682
-    else:
-        plot_sequence_length = consensus_sequence_length
-        cds_end = None
+    # Set plot sequence length to consensus length for all segments
+    plot_sequence_length = consensus_sequence_length
+    cds_end = None
     
     # Adjust figure width based on segment size
     # Typical segment lengths: S ~1.8kb, M ~3.6kb, L ~6.5kb
@@ -535,58 +560,18 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
                 # Calculate amplicon length
                 amplicon_length = r_end - f_start + 1
                 
-                # Create a more compact label format
-                if amplicon_length >= 1000:
-                    size_label = f"{amplicon_length/1000:.1f}kb"
-                else:
-                    size_label = f"{amplicon_length}bp"
+                # Get primer names for the label
+                f_name = row.get('F Name', '')
+                r_name = row.get('Reverse Name', '')
                 
                 # Create amplicon feature (will be displayed in top lanes)
                 features.append(
                     GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=12, 
-                                  label=f"A{i+1}({size_label})", fontsize=5, label_position="middle", 
+                                  label=f"{f_name}-{r_name}", fontsize=5, label_position="middle", 
                                   box_color=color, text_color="white")
                 )
             except Exception as e:
                 print(f"Error adding amplicon feature for pair {i+1}: {e}")
-        
-        # Then add all primer features
-        for i, row in df.iterrows():
-            color = primer_colors[i % len(primer_colors)]
-            
-            try:
-                f_name = row.get('F Name', '')
-                r_name = row.get('Reverse Name', '')
-                
-                # Extract positions from the region fields
-                f_region = row.get('F Region', '')
-                r_region = row.get('R Region', '')
-                
-                # Parse position from region field
-                f_match = f_region.split('-')
-                f_start = int(f_match[0])
-                f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
-                
-                r_match = r_region.split('-')
-                r_start = int(r_match[0])
-                r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
-                
-                # Adjust 1-based positions to 0-based
-                f_start -= 1
-                f_end -= 1
-                r_start -= 1
-                r_end -= 1
-                
-                # Add forward primer and reverse primer features
-                features.append(
-                    GraphicFeature(start=f_start, end=f_end, strand=1, color=color, label=f_name, fontsize=5)
-                )
-                
-                features.append(
-                    GraphicFeature(start=r_start, end=r_end, strand=-1, color=color, label=r_name, fontsize=5)
-                )
-            except Exception as e:
-                print(f"Error adding primer features for pair {i+1}: {e}")
         
         # Create the GraphicRecord
         record = GraphicRecord(sequence_length=plot_sequence_length, features=features)
@@ -595,16 +580,10 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
         record.plot(ax=ax)
         ax.set_title(f"Primer Pairs and Amplicons on {segment} Consensus Sequence")
         
-        # Mark the CDS end with a vertical line for M segment
-        if cds_end is not None:
-            ax.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
-            ax.text(cds_end + 10, 0.95, "3' UTR →", transform=ax.get_xaxis_transform(), 
-                    color='red', fontsize=8, fontweight='bold')
-        
     else:
         has_coverage = True
-        # To maintain consistency, always get max_coverage
-        max_coverage = max(average_coverage) * 1.1 if average_coverage else 100
+        # To maintain consistency, always get max_coverage - fixed to handle numpy arrays
+        max_coverage = np.max(average_coverage) * 1.1 if len(average_coverage) > 0 else 100
         
         # Setup a more complex figure with 2 subplots for coverage and primers
         fig_height = 5  # Fixed height for the combined plot
@@ -656,22 +635,60 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
         ax_coverage.set_ylim([0, max_coverage])
         ax_coverage.set_xlim([1, plot_sequence_length])
         ax_coverage.set_xlabel('')
+
+        # Create primer plot in the bottom panel (defining ax_primers that was referenced but not defined)
+        ax_primers = fig.add_subplot(gs[1])
+
+        # Create features for the original sequence
+        features = [
+            GraphicFeature(start=0, end=plot_sequence_length, strand=0, color="#ffffff", label="Consensus")
+        ]
+
+        # Create a color map for different primer pairs
+        primer_colors = plt.cm.tab10.colors
+
+        # Add features for primer pairs
+        for i, row in df.iterrows():
+            color = primer_colors[i % len(primer_colors)]
+            
+            try:
+                # Extract positions from the region fields
+                f_region = row.get('F Region', '')
+                r_region = row.get('R Region', '')
+                
+                # Parse position from region field (e.g., "1-32F" -> start=1, end=32)
+                f_match = f_region.split('-')
+                f_start = int(f_match[0])
+                f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
+                
+                r_match = r_region.split('-')
+                r_start = int(r_match[0])
+                r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
+                
+                # Adjust 1-based positions to 0-based
+                f_start -= 1
+                f_end -= 1
+                r_start -= 1
+                r_end -= 1
+                
+                # Create amplicon feature
+                features.append(
+                    GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=12, 
+                                  label=f"{row.get('F Name', '')}-{row.get('Reverse Name', '')}", 
+                                  fontsize=5, label_position="middle", 
+                                  box_color=color, text_color="white")
+                )
+            except Exception as e:
+                print(f"Error adding amplicon feature: {e}")
+
+        # Create and plot the GraphicRecord
+        record = GraphicRecord(sequence_length=plot_sequence_length, features=features)
+        record.plot(ax=ax_primers)
+
+        # Set consistent x-axis limits for both plots
         ax_coverage.set_xlim([1, plot_sequence_length])
         ax_primers.set_xlim([1, plot_sequence_length])
         
-        # Mark the CDS end with a vertical line for M segment
-        if cds_end is not None:
-            ax_coverage.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
-            ax_coverage.text(cds_end + 10, max_coverage * 0.9, "3' UTR →", 
-                    color='red', fontsize=8, fontweight='bold')
-            ax_primers.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
-            ax_primers.text(cds_end + 10, 0.95, "3' UTR →", transform=ax_primers.get_xaxis_transform(), 
-                    color='red', fontsize=8, fontweight='bold')
-        
-        # Clean up spines
-        for spine in ['top', 'right']:
-            ax_primers.spines[spine].set_visible(False)
-    
     # Final formatting and save
     plt.tight_layout(h_pad=0.5)  # Reduce padding between subplots
     plt.savefig(output_path, dpi=300, bbox_inches='tight')  # Crop any extra whitespace
@@ -679,107 +696,6 @@ def plot_primers_to_target(df, consensus_seq, output_path, segment):
     # Also save as SVG for vector editing
     svg_output_path = output_path.replace('.png', '.svg')
     plt.savefig(svg_output_path, format='svg', bbox_inches='tight')
-    plt.close()
-    
-    # Now create a second plot with JUST the amplicons (no primer arrows and labels)
-    plot_amplicons_only(df, consensus_seq, output_path.replace('.png', '_amplicons_only.png'), segment, plot_sequence_length, cds_end)
-
-def plot_amplicons_only(df, consensus_seq, output_path, segment, plot_sequence_length, cds_end=None):
-    """Create a simplified plot with just the amplicons, no primer arrows or labels"""
-    
-    # Adjust figure width based on segment size
-    if segment.startswith('S'):
-        width_multiplier = 1.0
-    elif segment.startswith('M'):
-        width_multiplier = 1.5
-    elif segment.startswith('L'):
-        width_multiplier = 2.0
-    else:
-        width_multiplier = 1.0
-    
-    # Base width starts at 15 inches
-    base_width = 15
-    adjusted_width = base_width * width_multiplier
-    
-    # Setup the figure
-    fig_height = 3  # Reduced height for amplicons only
-    fig, ax = plt.subplots(1, figsize=(adjusted_width, fig_height))
-    
-    # Create features for the consensus sequence
-    features = [
-        GraphicFeature(start=0, end=plot_sequence_length, strand=0, color="#ffffff", label="Consensus")
-    ]
-    
-    # Create a color map for different primer pairs
-    primer_colors = plt.cm.tab10.colors
-    
-    # Add all amplicon features
-    for i, row in df.iterrows():
-        color = primer_colors[i % len(primer_colors)]
-        
-        try:
-            # Extract positions from the region fields
-            f_region = row.get('F Region', '')
-            r_region = row.get('R Region', '')
-            
-            # Parse position from region field
-            f_match = f_region.split('-')
-            f_start = int(f_match[0])
-            f_end = int(''.join(c for c in f_match[1] if c.isdigit()))
-            
-            r_match = r_region.split('-')
-            r_start = int(r_match[0])
-            r_end = int(''.join(c for c in r_match[1] if c.isdigit()))
-            
-            # Adjust 1-based positions to 0-based
-            f_start -= 1
-            f_end -= 1
-            r_start -= 1
-            r_end -= 1
-            
-            # Calculate amplicon length
-            amplicon_length = r_end - f_start + 1
-            
-            # Create a more compact label format
-            if amplicon_length >= 1000:
-                size_label = f"{amplicon_length/1000:.1f}kb"
-            else:
-                size_label = f"{amplicon_length}bp"
-            
-            # Create amplicon feature with increased thickness for better visibility
-            features.append(
-                GraphicFeature(start=f_start, end=r_end, strand=0, color=color, thickness=14, 
-                              label=f"A{i+1}({size_label})", fontsize=5, label_position="middle", 
-                              box_color=color, text_color="white")
-            )
-        except Exception as e:
-            print(f"Error adding amplicon feature for pair {i+1}: {e}")
-    
-    # Create and plot the GraphicRecord
-    record = GraphicRecord(sequence_length=plot_sequence_length, features=features)
-    record.plot(ax=ax)
-    
-    # Set title and format
-    ax.set_title(f"Amplicons Only - {segment} Consensus Sequence")
-    
-    # Mark the CDS end with a vertical line for M segment
-    if cds_end is not None:
-        ax.axvline(x=cds_end, color='red', linestyle='--', linewidth=1)
-        ax.text(cds_end + 10, 0.95, "3' UTR →", transform=ax.get_xaxis_transform(), 
-                color='red', fontsize=8, fontweight='bold')
-    
-    # Clean up spines
-    for spine in ['top', 'right']:
-        ax.spines[spine].set_visible(False)
-    
-    # Save the plot
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    
-    # Also save as SVG
-    svg_output_path = output_path.replace('.png', '.svg')
-    plt.savefig(svg_output_path, format='svg', bbox_inches='tight')
-    
     plt.close()
 
 def extract_positions(row):
@@ -974,14 +890,10 @@ def main():
             print(f"  - {row['F Name']} / {row['Reverse Name']}")
     
     svg_plot_output = plot_output.replace('.png', '.svg')
-    amplicons_only_output = plot_output.replace('.png', '_amplicons_only.png')
-    amplicons_only_svg = amplicons_only_output.replace('.png', '.svg')
     
     print(f"\nPrimer map visualizations saved to:")
     print(f"  - {plot_output} (PNG)")
     print(f"  - {svg_plot_output} (SVG)")
-    print(f"  - {amplicons_only_output} (PNG, amplicons only)")
-    print(f"  - {amplicons_only_svg} (SVG, amplicons only)")
 
 if __name__ == "__main__":
     main() 
