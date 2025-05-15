@@ -2,6 +2,7 @@
 
 # Primer evaluation script for Hantavirus pipeline
 # Evaluates the quality of primers in Primers.csv against various criteria
+# NOTE: Primer suggestion functionality has been removed as requested
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
@@ -45,15 +46,6 @@ python scripts/primer_evaluation/evaluate_primers.py \
     --output "$RESULTS_DIR" \
     2>&1 | tee -a $PRIMER_EVAL_LOG
 
-# Generate improvement suggestions for the S segment primers
-echo -e "\nGenerating improvement suggestions for S segment primers..." | tee -a $PRIMER_EVAL_LOG
-python scripts/primer_evaluation/improve_primers.py \
-    --eval_report "$RESULTS_DIR/S_segment_primer_evaluation.csv" \
-    --reference "$CONSENSUS" \
-    --output "$RESULTS_DIR/S_segment_primer_improvements.csv" \
-    --blast_db "$BLAST_DB" \
-    2>&1 | tee -a $PRIMER_EVAL_LOG
-
 # Process M segment
 echo -e "\nEvaluating M segment primers..." | tee -a $PRIMER_EVAL_LOG
 BLAST_DB="data/blast_db/M_segment_blast_db"
@@ -67,57 +59,40 @@ python scripts/primer_evaluation/evaluate_primers.py \
     --output "$RESULTS_DIR" \
     2>&1 | tee -a $PRIMER_EVAL_LOG
 
-# Generate improvement suggestions for the M segment primers
-echo -e "\nGenerating improvement suggestions for M segment primers..." | tee -a $PRIMER_EVAL_LOG
-python scripts/primer_evaluation/improve_primers.py \
-    --eval_report "$RESULTS_DIR/M_segment_primer_evaluation.csv" \
-    --reference "$CONSENSUS" \
-    --output "$RESULTS_DIR/M_segment_primer_improvements.csv" \
-    --blast_db "$BLAST_DB" \
-    2>&1 | tee -a $PRIMER_EVAL_LOG
-
 # Add code for L segment when available
 
 echo -e "\nPrimer evaluation completed at $(date)" | tee -a $PRIMER_EVAL_LOG
 echo "Results available in $RESULTS_DIR"
 
-# Summarize improvement suggestions
-echo -e "\n=== PRIMER IMPROVEMENT SUMMARY ===" | tee -a $PRIMER_EVAL_LOG
+# Summarize evaluation results
+echo -e "\n=== PRIMER EVALUATION SUMMARY ===" | tee -a $PRIMER_EVAL_LOG
 
 # S segment summary
-if [ -f "$RESULTS_DIR/S_segment_primer_improvements.csv" ]; then
-    IMPROVED_COUNT=$(wc -l < "$RESULTS_DIR/S_segment_primer_improvements.csv")
+if [ -f "$RESULTS_DIR/S_segment_primer_evaluation.csv" ]; then
+    TOTAL_COUNT=$(wc -l < "$RESULTS_DIR/S_segment_primer_evaluation.csv")
     # Subtract 1 for the header line
-    if [ $IMPROVED_COUNT -gt 1 ]; then
-        IMPROVED_COUNT=$((IMPROVED_COUNT - 1))
-        echo "S segment: Generated improvements for $IMPROVED_COUNT primers." | tee -a $PRIMER_EVAL_LOG
-        echo "Full details in: $RESULTS_DIR/S_segment_primer_improvements.csv" | tee -a $PRIMER_EVAL_LOG
-        
-        # Generate a quick summary table of changed primers
-        if command -v column > /dev/null; then
-            echo -e "\nSummary of changed S segment primers:" | tee -a $PRIMER_EVAL_LOG
-            (echo "Primer,Type,Changes,Length Δ"; tail -n +2 "$RESULTS_DIR/S_segment_primer_improvements.csv" | cut -d, -f1,2,15,16 | sort -t, -k3,3nr) | column -t -s, | tee -a $PRIMER_EVAL_LOG
-        fi
-    else
-        echo "S segment: No primer improvements needed - all primers pass quality checks." | tee -a $PRIMER_EVAL_LOG
+    TOTAL_COUNT=$((TOTAL_COUNT - 1))
+    FAIL_COUNT=$(grep -c "FAIL" "$RESULTS_DIR/S_segment_primer_evaluation.csv")
+    
+    echo "S segment: Evaluated $TOTAL_COUNT primers, $FAIL_COUNT have issues." | tee -a $PRIMER_EVAL_LOG
+    
+    if [ $FAIL_COUNT -gt 0 ]; then
+        echo "Problematic S segment primers:" | tee -a $PRIMER_EVAL_LOG
+        grep "FAIL" "$RESULTS_DIR/S_segment_primer_evaluation.csv" | cut -d, -f1,2,3,4,5,6 | sed 's/,/ | /g' | tee -a $PRIMER_EVAL_LOG
     fi
 fi
 
 # M segment summary
-if [ -f "$RESULTS_DIR/M_segment_primer_improvements.csv" ]; then
-    IMPROVED_COUNT=$(wc -l < "$RESULTS_DIR/M_segment_primer_improvements.csv")
+if [ -f "$RESULTS_DIR/M_segment_primer_evaluation.csv" ]; then
+    TOTAL_COUNT=$(wc -l < "$RESULTS_DIR/M_segment_primer_evaluation.csv")
     # Subtract 1 for the header line
-    if [ $IMPROVED_COUNT -gt 1 ]; then
-        IMPROVED_COUNT=$((IMPROVED_COUNT - 1))
-        echo -e "\nM segment: Generated improvements for $IMPROVED_COUNT primers." | tee -a $PRIMER_EVAL_LOG
-        echo "Full details in: $RESULTS_DIR/M_segment_primer_improvements.csv" | tee -a $PRIMER_EVAL_LOG
-        
-        # Generate a quick summary table of changed primers
-        if command -v column > /dev/null; then
-            echo -e "\nSummary of changed M segment primers:" | tee -a $PRIMER_EVAL_LOG
-            (echo "Primer,Type,Changes,Length Δ"; tail -n +2 "$RESULTS_DIR/M_segment_primer_improvements.csv" | cut -d, -f1,2,15,16 | sort -t, -k3,3nr) | column -t -s, | tee -a $PRIMER_EVAL_LOG
-        fi
-    else
-        echo "M segment: No primer improvements needed - all primers pass quality checks." | tee -a $PRIMER_EVAL_LOG
+    TOTAL_COUNT=$((TOTAL_COUNT - 1))
+    FAIL_COUNT=$(grep -c "FAIL" "$RESULTS_DIR/M_segment_primer_evaluation.csv")
+    
+    echo -e "\nM segment: Evaluated $TOTAL_COUNT primers, $FAIL_COUNT have issues." | tee -a $PRIMER_EVAL_LOG
+    
+    if [ $FAIL_COUNT -gt 0 ]; then
+        echo "Problematic M segment primers:" | tee -a $PRIMER_EVAL_LOG
+        grep "FAIL" "$RESULTS_DIR/M_segment_primer_evaluation.csv" | cut -d, -f1,2,3,4,5,6 | sed 's/,/ | /g' | tee -a $PRIMER_EVAL_LOG
     fi
 fi 

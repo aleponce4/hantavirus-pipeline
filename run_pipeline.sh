@@ -2,6 +2,9 @@
 
 # Simple wrapper script to run the viral sequencing pipeline
 
+# Source the configuration file
+source ./config.sh
+
 # Create logs directory
 mkdir -p logs
 
@@ -52,6 +55,6 @@ echo "  - results/plots/: Coverage and alignment plots"
 echo "  - results/trimmed/: Trimmed reads (used by both passes)"
 
 # Run primer evaluation
-echo "Running primer evaluation..."
+echo "Running primer evaluation (checking for binding issues)..."
 bash ./scripts/07_evaluate_primers.sh
 echo "Primer evaluation finished. Results are in the 'results/primer_evaluation' directory." 

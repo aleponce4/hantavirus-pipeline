@@ -1,12 +1,60 @@
-# Ignore data and results directories
-data/
-data/*
-results/
-results/*
+# Ignore data files but keep folder structure
 
-# ignore logs
-logs/
+# Raw data
+data/raw_reads/*
+!data/raw_reads/.gitkeep
+
+# References
+data/references/*
+!data/references/.gitkeep
+!data/references/*/
+data/references/*/*
+!data/references/*/.gitkeep
+
+# Primers
+data/primers/*
+!data/primers/.gitkeep
+!data/primers/bed_files/
+!data/primers/pairings/
+data/primers/bed_files/*
+data/primers/pairings/*
+!data/primers/bed_files/.gitkeep
+!data/primers/pairings/.gitkeep
+
+# Results
+results/*
+!results/.gitkeep
+!results/first_pass/
+!results/second_pass/
+!results/negative_samples/
+!results/plots/
+!results/trimmed/
+!results/primer_evaluation/
+results/first_pass/*
+results/second_pass/*
+results/negative_samples/*
+results/plots/*
+results/trimmed/*
+results/primer_evaluation/*
+!results/first_pass/.gitkeep
+!results/second_pass/.gitkeep
+!results/negative_samples/.gitkeep
+!results/plots/.gitkeep
+!results/trimmed/.gitkeep
+!results/primer_evaluation/.gitkeep
+
+# Log files
 logs/*
+!logs/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+.Rhistory
+__pycache__/
+*.py[cod]
+*$py.class
 
 
 

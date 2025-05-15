@@ -11,7 +11,7 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
 - Reference-based mapping
 - Automatic negative sample detection
 - Metaconsensus generation
-- Variant calling
+- Variant calling with improved coordinate consistency
 - Consensus sequence creation
 - Coverage visualization
 - Primer evaluation and optimization
@@ -52,6 +52,7 @@ This pipeline is designed for processing Illumina paired-end sequencing data of 
 2. Place your reference sequences in `data/references/`:
    - Create a directory for each segment: `L_segment`, `M_segment`, and `S_segment`
    - In each directory, place a FASTA file containing the reference sequence
+   - GFF3 annotation files should be named to match the reference FASTA (e.g., `JN232078.fasta` and `JN232078.gff3`)
 
 3. Place your primer information in `data/primers/Primers.csv` (if using primer trimming)
 
@@ -113,8 +114,10 @@ The pipeline executes the following steps:
    - Creates a metaconsensus sequence from all positive samples
 
 4. **Second Pass Processing** (positive samples only):
-   - Re-alignment to metaconsensus reference
-   - Improved variant calling
+   - Re-alignment to metaconsensus reference (for better read mapping)
+   - Extracting reads from the metaconsensus alignment
+   - Re-mapping extracted reads to the original reference
+   - Variant calling against the original reference (for consistent coordinates)
    - Final consensus generation
    - Comparison between first and second pass results
 
@@ -139,6 +142,22 @@ Results are organized in the `results/` directory with the following structure:
 - `results/plots/` - Coverage and alignment plots
   - `results/plots/negative_samples/` - Plots for negative samples
 - `results/primer_evaluation/` - Primer evaluation results and suggested improvements
+
+## Variant Calling Improvements
+
+The pipeline implements a sophisticated two-pass approach to variant calling:
+
+1. In the first pass, reads are mapped directly to the original reference
+2. In the second pass:
+   - Reads are initially mapped to the metaconsensus (better mapping due to closer sequence similarity)
+   - Mapped reads are extracted and remapped to the original reference
+   - Variants are called against the original reference
+   
+This approach solves several challenges:
+- Improves read mapping by using the metaconsensus (which better represents the virus population)
+- Maintains coordinate consistency by calling variants against the original reference
+- Prevents false positive variants caused by coordinate mismatches
+- Enables proper amino acid annotation using consistent GFF coordinates
 
 ## Visualization
 
@@ -165,6 +184,7 @@ The pipeline includes a primer evaluation module that:
 - Verify reference sequences are properly formatted FASTA files
 - Make sure the conda environment is properly activated before running the pipeline
 - For negative samples, check `results/negative_samples/negative_samples.txt` for the list of samples that were classified as negative
+- When using custom references, ensure that GFF files match the FASTA files for proper annotation
 
 ## License
 

@@ -2,6 +2,9 @@
 
 # Main pipeline script for viral sequencing data processing
 
+# Source the configuration file
+source ./config.sh
+
 # Create logs directory
 mkdir -p logs
 
@@ -132,7 +135,7 @@ done
 # Detect negative samples based on coverage
 echo "Detecting negative samples..."
 (echo "==== Detecting negative samples ====" >> $NEGATIVE_SAMPLES_LOG)
-bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/detect_negative_samples.sh 50" >> $NEGATIVE_SAMPLES_LOG 2>&1
+bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/utilities/detect_negative_samples.sh $NEGATIVE_SAMPLE_THRESHOLD" >> $NEGATIVE_SAMPLES_LOG 2>&1
 echo "Negative sample detection complete"
 
 # Create a list of negative samples that should be skipped

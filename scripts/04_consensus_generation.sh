@@ -4,6 +4,9 @@
 
 sample=$1
 
+# Source the configuration file
+source ./config.sh
+
 # Check if this is the first pass
 if [ "$FIRST_PASS" = "true" ]; then
     echo "Generating consensus for sample: $sample (FIRST PASS)"
@@ -18,9 +21,7 @@ else
     COMPARE_WITH_PREVIOUS=true
 fi
 
-# Set minimum coverage threshold - positions with coverage below this will be masked with N
-MIN_COVERAGE=10
-echo "Using minimum coverage threshold: $MIN_COVERAGE (positions below this will be masked with N)"
+echo "Using minimum coverage threshold: $MIN_CONSENSUS_COVERAGE (positions below this will be masked with $MASK_CHAR)"
 
 # Process each segment
 for segment in L_segment M_segment S_segment; do
@@ -63,9 +64,9 @@ for segment in L_segment M_segment S_segment; do
             echo "Found $variant_count variants in VCF file"
             
             # Generate mask for low coverage regions
-            echo "Generating coverage mask for regions below ${MIN_COVERAGE}x coverage..."
+            echo "Generating coverage mask for regions below ${MIN_CONSENSUS_COVERAGE}x coverage..."
             mask_bed="$out_dir/${sample}_mask.bed"
-            samtools depth -a "$bam_file" | awk -v min="$MIN_COVERAGE" '$3 < min {print $1"\t"$2-1"\t"$2}' > "$mask_bed"
+            samtools depth -a "$bam_file" | awk -v min="$MIN_CONSENSUS_COVERAGE" '$3 < min {print $1"\t"$2-1"\t"$2}' > "$mask_bed"
             
             # Count masked positions
             mask_count=$(wc -l < "$mask_bed")
@@ -94,7 +95,7 @@ for segment in L_segment M_segment S_segment; do
             # Apply masking for low coverage regions
             if [ "$mask_count" -gt 0 ]; then
                 echo "Applying coverage mask to consensus..."
-                bedtools maskfasta -fi "$temp_consensus" -bed "$mask_bed" -fo "$consensus_file" -mc N
+                bedtools maskfasta -fi "$temp_consensus" -bed "$mask_bed" -fo "$consensus_file" -mc "$MASK_CHAR"
                 
                 # Check if masking succeeded
                 if [ $? -ne 0 ] || [ ! -s "$consensus_file" ]; then
