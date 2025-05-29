@@ -1,5 +1,5 @@
 #!/bin/bash
-# Simplified consensus generation script using iVar
+# Consensus generation script - uses consensus from full iVar pipeline
 
 sample=$1
 
@@ -21,46 +21,61 @@ for segment in M_segment S_segment; do  # Skip L_segment - no data
     segment_dir="data/references/$segment"
     
     if [ -d "$segment_dir" ] && [ "$(ls -A $segment_dir)" ]; then
-        # Use original reference for both passes (simplified)
+        # Use original reference
         reference=$(ls "$segment_dir"/Reference_*.fasta | head -n 1)
         echo "Using reference for $segment: $reference"
         
         # Set up paths
-        bam_file="$RESULTS_DIR/$sample/alignment/$segment/${sample}.bam"
+        variants_dir="$RESULTS_DIR/$sample/variants/$segment"
         out_dir="$RESULTS_DIR/$sample/consensus/$segment"
         mkdir -p "$out_dir"
         
         echo "Generating consensus for $sample - $segment"
         
-        # Check if we have a cleaned BAM from variant calling (after primer mismatch removal)
-        cleaned_bam="$RESULTS_DIR/$sample/variants/$segment/cleaned.sorted.bam"
-        if [ -f "$cleaned_bam" ]; then
-            echo "  Using cleaned BAM (post primer-mismatch removal)"
-            input_bam="$cleaned_bam"
+        # Check if consensus was already generated during variant calling
+        if [ -f "$variants_dir/consensus.fa" ]; then
+            echo "  Using consensus generated during variant calling pipeline"
+            cp "$variants_dir/consensus.fa" "$out_dir/${sample}_consensus.fasta"
+            
+            # Fix header to match expected format
+            sed -i "1s/.*/>$sample $segment consensus/" "$out_dir/${sample}_consensus.fasta"
+            
         else
-            # Check for primer-trimmed BAM
-            trimmed_bam="$RESULTS_DIR/$sample/variants/$segment/trimmed.sorted.bam"
-            if [ -f "$trimmed_bam" ]; then
+            echo "  Generating new consensus from final alignment..."
+            
+            # Find the best available BAM file (cleaned > final > trimmed > original)
+            if [ -f "$variants_dir/final_alignment.bam" ]; then
+                input_bam="$variants_dir/final_alignment.bam"
+                echo "  Using final cleaned alignment"
+            elif [ -f "$variants_dir/cleaned.sorted.bam" ]; then
+                input_bam="$variants_dir/cleaned.sorted.bam"
+                echo "  Using cleaned BAM"
+            elif [ -f "$variants_dir/trimmed.sorted.bam" ]; then
+                input_bam="$variants_dir/trimmed.sorted.bam"
                 echo "  Using primer-trimmed BAM"
-                input_bam="$trimmed_bam"
             else
-                echo "  Using original alignment BAM"
+                bam_file="$RESULTS_DIR/$sample/alignment/$segment/${sample}.bam"
                 input_bam="$bam_file"
+                echo "  Using original alignment BAM"
+            fi
+            
+            # Generate consensus with iVar
+            samtools mpileup -aa -A -d 0 -Q 0 --reference "$reference" "$input_bam" | \
+                ivar consensus -p "$out_dir/${sample}_consensus" \
+                -m "$MIN_CONSENSUS_COVERAGE" -t 0.5 -q "$MIN_VARIANT_QUALITY" -n N \
+                -i "${sample}_${segment}_consensus"
+            
+            # Rename to expected filename
+            if [ -f "$out_dir/${sample}_consensus.fa" ]; then
+                mv "$out_dir/${sample}_consensus.fa" "$out_dir/${sample}_consensus.fasta"
             fi
         fi
         
-        # Generate majority consensus with iVar
-        echo "  Creating majority consensus with iVar..."
-        samtools mpileup -aa -A -d 0 -Q 0 --reference "$reference" "$input_bam" | \
-            ivar consensus -p "$out_dir/${sample}_consensus" \
-            -m "$MIN_CONSENSUS_COVERAGE" -t 0.5 -q "$MIN_VARIANT_QUALITY" -n N \
-            -i "${sample}_${segment}_consensus"
-        
-        # Check if consensus was generated
-        if [ -f "$out_dir/${sample}_consensus.fa" ]; then
+        # Check if consensus was generated successfully
+        if [ -f "$out_dir/${sample}_consensus.fasta" ]; then
             # Count coverage statistics
             total_positions=$(samtools view -H "$reference" | grep "^@SQ" | awk '{print $3}' | sed 's/LN://')
-            n_count=$(grep -o "N" "$out_dir/${sample}_consensus.fa" | wc -l)
+            n_count=$(grep -o "N" "$out_dir/${sample}_consensus.fasta" | wc -l)
             coverage_positions=$((total_positions - n_count))
             
             # Fix division by zero
@@ -74,9 +89,6 @@ for segment in M_segment S_segment; do  # Skip L_segment - no data
             echo "    Total positions: $total_positions"
             echo "    Covered positions: $coverage_positions (${coverage_pct}%)"
             echo "    Masked positions (Ns): $n_count"
-            
-            # Rename to expected filename for compatibility
-            mv "$out_dir/${sample}_consensus.fa" "$out_dir/${sample}_consensus.fasta"
             
             echo "  Consensus saved to: $out_dir/${sample}_consensus.fasta"
         else
