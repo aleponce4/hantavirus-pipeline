@@ -62,7 +62,13 @@ for segment in M_segment S_segment; do  # Skip L_segment - no data
             total_positions=$(samtools view -H "$reference" | grep "^@SQ" | awk '{print $3}' | sed 's/LN://')
             n_count=$(grep -o "N" "$out_dir/${sample}_consensus.fa" | wc -l)
             coverage_positions=$((total_positions - n_count))
-            coverage_pct=$(awk -v cov="$coverage_positions" -v total="$total_positions" 'BEGIN {printf "%.1f", cov*100/total}')
+            
+            # Fix division by zero
+            if [ "$total_positions" -gt 0 ]; then
+                coverage_pct=$(awk -v cov="$coverage_positions" -v total="$total_positions" 'BEGIN {printf "%.1f", cov*100/total}')
+            else
+                coverage_pct="0.0"
+            fi
             
             echo "  Consensus generated successfully"
             echo "    Total positions: $total_positions"
