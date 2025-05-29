@@ -1,192 +1,90 @@
 #!/bin/bash
-
-# Consensus generation script
+# Simplified consensus generation script using iVar
 
 sample=$1
 
 # Source the configuration file
 source ./config.sh
 
-# Check if this is the first pass
 if [ "$FIRST_PASS" = "true" ]; then
     echo "Generating consensus for sample: $sample (FIRST PASS)"
     RESULTS_DIR="results/first_pass"
-    # For first pass, we don't need to compare with previous pass
-    COMPARE_WITH_PREVIOUS=false
 else
     echo "Generating consensus for sample: $sample (SECOND PASS)"
     RESULTS_DIR="results/second_pass"
-    # For second pass, track the first pass consensus for comparison
-    FIRST_PASS_DIR="results/first_pass"
-    COMPARE_WITH_PREVIOUS=true
 fi
 
-echo "Using minimum coverage threshold: $MIN_CONSENSUS_COVERAGE (positions below this will be masked with $MASK_CHAR)"
+echo "Using minimum coverage threshold: $MIN_CONSENSUS_COVERAGE"
 
 # Process each segment
-for segment in L_segment M_segment S_segment; do
+for segment in M_segment S_segment; do  # Skip L_segment - no data
     segment_dir="data/references/$segment"
     
-    # Check if there are any files in the segment directory
     if [ -d "$segment_dir" ] && [ "$(ls -A $segment_dir)" ]; then
-        # Reference selection strategy
-        if [ "$FIRST_PASS" = "true" ]; then
-            # For first pass, always use the original reference
-            reference=$(ls $segment_dir/*.fasta | grep -v "metaconsensus.fasta" | head -n 1)
-            echo "FIRST PASS: Using original reference for $segment: $reference"
+        # Use original reference for both passes (simplified)
+        reference=$(ls "$segment_dir"/Reference_*.fasta | head -n 1)
+        echo "Using reference for $segment: $reference"
+        
+        # Set up paths
+        bam_file="$RESULTS_DIR/$sample/alignment/$segment/${sample}.bam"
+        out_dir="$RESULTS_DIR/$sample/consensus/$segment"
+        mkdir -p "$out_dir"
+        
+        echo "Generating consensus for $sample - $segment"
+        
+        # Check if we have a cleaned BAM from variant calling (after primer mismatch removal)
+        cleaned_bam="$RESULTS_DIR/$sample/variants/$segment/cleaned.sorted.bam"
+        if [ -f "$cleaned_bam" ]; then
+            echo "  Using cleaned BAM (post primer-mismatch removal)"
+            input_bam="$cleaned_bam"
         else
-            # For second pass, always use the metaconsensus reference
-            metaconsensus="data/references/$segment/metaconsensus.fasta"
-            if [ -f "$metaconsensus" ]; then
-                reference=$metaconsensus
-                echo "SECOND PASS: Using metaconsensus reference for $segment: $reference"
+            # Check for primer-trimmed BAM
+            trimmed_bam="$RESULTS_DIR/$sample/variants/$segment/trimmed.sorted.bam"
+            if [ -f "$trimmed_bam" ]; then
+                echo "  Using primer-trimmed BAM"
+                input_bam="$trimmed_bam"
             else
-                echo "ERROR: Metaconsensus reference not found for $segment. Cannot proceed with second pass."
-                exit 1
+                echo "  Using original alignment BAM"
+                input_bam="$bam_file"
             fi
         fi
         
-        if [ -n "$reference" ]; then
-            # Input files
-            bam_file="$RESULTS_DIR/$sample/alignment/$segment/${sample}.bam"
-            vcf_file="$RESULTS_DIR/$sample/variants/$segment/${sample}.vcf.gz"
+        # Generate majority consensus with iVar
+        echo "  Creating majority consensus with iVar..."
+        samtools mpileup -aa -A -d 0 -Q 0 --reference "$reference" "$input_bam" | \
+            ivar consensus -p "$out_dir/${sample}_consensus" \
+            -m "$MIN_CONSENSUS_COVERAGE" -t 0.5 -q "$MIN_VARIANT_QUALITY" -n N \
+            -i "${sample}_${segment}_consensus"
+        
+        # Check if consensus was generated
+        if [ -f "$out_dir/${sample}_consensus.fa" ]; then
+            # Count coverage statistics
+            total_positions=$(samtools view -H "$reference" | grep "^@SQ" | awk '{print $3}' | sed 's/LN://')
+            n_count=$(grep -o "N" "$out_dir/${sample}_consensus.fa" | wc -l)
+            coverage_positions=$((total_positions - n_count))
+            coverage_pct=$(awk -v cov="$coverage_positions" -v total="$total_positions" 'BEGIN {printf "%.1f", cov*100/total}')
             
-            # Output directory
-            out_dir="$RESULTS_DIR/$sample/consensus/$segment"
-            mkdir -p $out_dir
+            echo "  Consensus generated successfully"
+            echo "    Total positions: $total_positions"
+            echo "    Covered positions: $coverage_positions (${coverage_pct}%)"
+            echo "    Masked positions (Ns): $n_count"
             
-            # Generate consensus FASTA
-            consensus_file="$out_dir/${sample}_consensus.fasta"
+            # Rename to expected filename for compatibility
+            mv "$out_dir/${sample}_consensus.fa" "$out_dir/${sample}_consensus.fasta"
             
-            # Debug: Check if VCF has variants
-            echo "Checking VCF file for variants..."
-            variant_count=$(zcat $vcf_file | grep -v "^#" | wc -l)
-            echo "Found $variant_count variants in VCF file"
-            
-            # Generate mask for low coverage regions
-            echo "Generating coverage mask for regions below ${MIN_CONSENSUS_COVERAGE}x coverage..."
-            mask_bed="$out_dir/${sample}_mask.bed"
-            samtools depth -a "$bam_file" | awk -v min="$MIN_CONSENSUS_COVERAGE" '$3 < min {print $1"\t"$2-1"\t"$2}' > "$mask_bed"
-            
-            # Count masked positions
-            mask_count=$(wc -l < "$mask_bed")
-            echo "Number of positions to be masked due to low coverage: $mask_count"
-            
-            # Make sure reference is indexed
-            if [ ! -f "${reference}.fai" ]; then
-                samtools faidx "$reference"
-            fi
-            
-            # Generate consensus with bcftools
-            echo "Generating consensus using bcftools consensus..."
-            temp_consensus="$out_dir/temp_consensus.fa"
-            
-            # Use bcftools with -I flag to handle empty IDs in LoFreq's VCF
-            bcftools consensus -I -f "$reference" "$vcf_file" -o "$temp_consensus" 2> "$out_dir/bcftools.log"
-            
-            # Check if consensus generation succeeded
-            if [ $? -ne 0 ] || [ ! -s "$temp_consensus" ]; then
-                echo "ERROR: bcftools consensus failed. Check the log file for details:"
-                cat "$out_dir/bcftools.log"
-                echo "Failed to generate consensus for $sample - $segment"
-                exit 1
-            fi
-            
-            # Apply masking for low coverage regions
-            if [ "$mask_count" -gt 0 ]; then
-                echo "Applying coverage mask to consensus..."
-                bedtools maskfasta -fi "$temp_consensus" -bed "$mask_bed" -fo "$consensus_file" -mc "$MASK_CHAR"
-                
-                # Check if masking succeeded
-                if [ $? -ne 0 ] || [ ! -s "$consensus_file" ]; then
-                    echo "WARNING: bedtools maskfasta failed. Using unmasked consensus."
-                    cp "$temp_consensus" "$consensus_file"
-                fi
-            else
-                # No masking needed
-                cp "$temp_consensus" "$consensus_file"
-            fi
-            
-            # Fix the header
-            sed -i "1s/.*/>$sample $segment consensus/" "$consensus_file"
-            
-            # Count mismatches from the log
-            mismatch_count=$(grep -c "Reference FASTA/BCF inconsistency" "$out_dir/bcftools.log")
-            if [ "$mismatch_count" -gt 0 ]; then
-                echo "WARNING: $mismatch_count reference mismatches detected. See $out_dir/bcftools.log for details."
-                if [ "$mismatch_count" -gt 20 ]; then
-                    echo "Consider checking that the reference FASTA exactly matches what was used during alignment."
-                fi
-            fi
-            
-            # Clean up temporary files
-            rm -f "$temp_consensus"
-            
-            # For second pass, compare with first pass consensus to evaluate improvement
-            if [ "$COMPARE_WITH_PREVIOUS" == "true" ]; then
-                first_pass_consensus="$FIRST_PASS_DIR/$sample/consensus/$segment/${sample}_consensus.fasta"
-                if [ -f "$first_pass_consensus" ]; then
-                    echo "Comparing first pass and second pass consensus sequences..."
-                    
-                    # Create a comparison directory if it doesn't exist
-                    comparison_dir="$RESULTS_DIR/$sample/comparison/$segment"
-                    mkdir -p "$comparison_dir"
-                    
-                    # Get sequences without headers for comparison
-                    grep -v "^>" "$first_pass_consensus" > "$comparison_dir/first_pass_seq.txt"
-                    grep -v "^>" "$consensus_file" > "$comparison_dir/second_pass_seq.txt"
-                    
-                    # Basic diff to count differences
-                    diff_count=$(diff -y --suppress-common-lines "$comparison_dir/first_pass_seq.txt" "$comparison_dir/second_pass_seq.txt" | wc -l)
-                    echo "CONSENSUS COMPARISON: Found $diff_count differences between first and second pass"
-                    
-                    # Count Ns in each consensus
-                    first_pass_Ns=$(grep -o "N" "$comparison_dir/first_pass_seq.txt" | wc -l)
-                    second_pass_Ns=$(grep -o "N" "$comparison_dir/second_pass_seq.txt" | wc -l)
-                    echo "COVERAGE COMPARISON: First pass had $first_pass_Ns Ns, Second pass has $second_pass_Ns Ns"
-                    
-                    # Calculate N reduction percentage
-                    if [ "$first_pass_Ns" -gt 0 ]; then
-                        n_reduction=$(( (first_pass_Ns - second_pass_Ns) * 100 / first_pass_Ns ))
-                        echo "COVERAGE IMPROVEMENT: Second pass reduced Ns by $n_reduction% compared to first pass"
-                    elif [ "$first_pass_Ns" -eq 0 ] && [ "$second_pass_Ns" -eq 0 ]; then
-                        echo "COVERAGE COMPARISON: Both passes have complete coverage (no Ns)"
-                    fi
-                    
-                    # Calculate consensus similarity
-                    first_pass_length=$(wc -c < "$comparison_dir/first_pass_seq.txt")
-                    similarity_pct=$(( (first_pass_length - diff_count) * 100 / first_pass_length ))
-                    echo "CONSENSUS SIMILARITY: First and second pass are $similarity_pct% identical"
-                    
-                    # Save comparison summary
-                    {
-                        echo "CONSENSUS COMPARISON SUMMARY FOR $sample - $segment"
-                        echo "----------------------------------------------"
-                        echo "Differences between passes: $diff_count positions"
-                        echo "First pass Ns: $first_pass_Ns"
-                        echo "Second pass Ns: $second_pass_Ns"
-                        if [ "$first_pass_Ns" -gt 0 ]; then
-                            echo "N reduction: $n_reduction%"
-                        fi
-                        echo "Sequence similarity: $similarity_pct%"
-                        echo "----------------------------------------------"
-                        echo "First pass variants: $(zcat "$FIRST_PASS_DIR/$sample/variants/$segment/${sample}.vcf.gz" | grep -v "^#" | wc -l)"
-                        echo "Second pass variants: $variant_count"
-                        echo "----------------------------------------------"
-                    } > "$comparison_dir/comparison_summary.txt"
-                    
-                    # Generate a more detailed diff file for inspection
-                    diff -y "$comparison_dir/first_pass_seq.txt" "$comparison_dir/second_pass_seq.txt" > "$comparison_dir/full_diff.txt"
-                    
-                    echo "Comparison details saved to $comparison_dir/comparison_summary.txt"
-                else
-                    echo "WARNING: Could not find first pass consensus at $first_pass_consensus for comparison"
-                fi
-            fi
-            
-            echo "Successfully generated consensus for $sample - $segment"
+            echo "  Consensus saved to: $out_dir/${sample}_consensus.fasta"
+        else
+            echo "  ERROR: Failed to generate consensus for $sample - $segment"
+            exit 1
         fi
     fi
 done
+
+# Create placeholder for L_segment
+L_dir="$RESULTS_DIR/$sample/consensus/L_segment"
+mkdir -p "$L_dir"
+echo ">$sample L_segment consensus (NO DATA AVAILABLE)" > "$L_dir/${sample}_consensus.fasta"
+echo "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN" >> "$L_dir/${sample}_consensus.fasta"
+echo "Created placeholder consensus for L_segment"
 
 echo "Consensus generation completed for sample: $sample" 
