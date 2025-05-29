@@ -2,6 +2,10 @@
 
 # Main pipeline script for viral sequencing data processing
 
+# Strict error handling
+set -e  # Exit immediately if a command exits with non-zero status
+set -o pipefail  # Return value of a pipeline is the value of the last command to exit with non-zero status
+
 # Source the configuration file
 source ./config.sh
 
@@ -17,6 +21,7 @@ REFINEMENT_LOG="logs/05_refinement.log"
 SECOND_PASS_LOG="logs/06_second_pass.log"
 PLOTS_LOG="logs/07_plots.log"
 NEGATIVE_SAMPLES_LOG="logs/negative_samples.log"
+ERROR_LOG="logs/pipeline_errors.log"
 
 # Clear any existing log files
 > $PREPROCESSING_LOG
@@ -27,6 +32,19 @@ NEGATIVE_SAMPLES_LOG="logs/negative_samples.log"
 > $SECOND_PASS_LOG
 > $PLOTS_LOG
 > $NEGATIVE_SAMPLES_LOG
+> $ERROR_LOG
+
+# Error handling function
+handle_error() {
+    local exit_code=$1
+    local error_message=$2
+    local step=$3
+    
+    echo "[ERROR] $error_message" | tee -a $ERROR_LOG
+    echo "[ERROR] Failed at step: $step" | tee -a $ERROR_LOG
+    echo "[ERROR] See detailed logs in the logs directory" | tee -a $ERROR_LOG
+    exit $exit_code
+}
 
 # Ensure conda environment is properly activated
 CONDA_BASE=$(conda info --base)
@@ -35,8 +53,7 @@ conda activate De_Novo_pipeline
 
 # Verify conda environment is active
 if [[ "${CONDA_DEFAULT_ENV}" != "De_Novo_pipeline" ]]; then
-    echo "Error: Failed to activate De_Novo_pipeline conda environment"
-    exit 1
+    handle_error 1 "Failed to activate De_Novo_pipeline conda environment" "Environment Setup"
 fi
 echo "Successfully activated conda environment: ${CONDA_DEFAULT_ENV}"
 echo "CONDA_PREFIX: $CONDA_PREFIX"
@@ -51,9 +68,39 @@ mkdir -p results/second_pass # New dedicated directory for second pass results
 export CONDA_PREFIX
 export PATH="${CONDA_PREFIX}/bin:$PATH"
 
-# Get unique sample names from filenames (remove _R1.fastq.gz or _R2.fastq.gz)
+# Check if raw reads directory exists and has files
+if [[ ! -d "data/raw_reads" ]]; then
+    handle_error 1 "Raw reads directory 'data/raw_reads' does not exist" "Input Validation"
+fi
+
+# Get unique sample names from filenames
 cd data/raw_reads
-samples=$(ls *.fastq.gz | sed 's/_R[12]\.fastq\.gz$//' | sort | uniq)
+# More flexible pattern detection for various fastq naming conventions
+raw_files=$(ls *.fastq.gz 2>/dev/null || true)
+if [[ -z "$raw_files" ]]; then
+    handle_error 1 "No FASTQ files found in data/raw_reads/" "Input Validation"
+fi
+
+# Try to handle different naming conventions
+samples=""
+# Pattern 1: Sample_R1.fastq.gz, Sample_R2.fastq.gz
+pattern1=$(ls *_R1.fastq.gz 2>/dev/null | sed 's/_R1\.fastq\.gz$//' || true)
+# Pattern 2: Sample_L001_R1_001.fastq.gz, Sample_L001_R2_001.fastq.gz
+pattern2=$(ls *_L001_R1_001.fastq.gz 2>/dev/null | sed 's/_L001_R1_001\.fastq\.gz$//' || true)
+# Pattern 3: Sample.R1.fastq.gz, Sample.R2.fastq.gz
+pattern3=$(ls *.R1.fastq.gz 2>/dev/null | sed 's/\.R1\.fastq\.gz$//' || true)
+
+# Combine all patterns and remove duplicates
+samples=$(echo -e "$pattern1\n$pattern2\n$pattern3" | sort | uniq | grep -v '^$')
+
+if [[ -z "$samples" ]]; then
+    handle_error 1 "Could not identify samples from FASTQ file naming patterns. Check file naming conventions." "Input Validation"
+fi
+
+# Display detected samples
+echo "Detected $(echo "$samples" | wc -l) samples for processing:"
+echo "$samples" | sed 's/^/  - /'
+
 cd ../../
 
 # Calculate optimal thread counts based on available cores
@@ -184,16 +231,6 @@ if [ "$PARALLEL_SAMPLES" = true ]; then
     # Wait for all remaining first pass jobs to complete
     echo "Waiting for all first pass jobs to complete..."
     wait
-    
-    # Verify all samples completed
-    for sample in $samples; do
-        if [ ! -f ".jobs/first_pass_${sample}.done" ]; then
-            echo "ERROR: First pass processing failed for sample $sample"
-            exit 1
-        fi
-    done
-    
-    echo "All first pass jobs completed successfully"
 else
     # Process samples sequentially for workstation environments
     for sample in $samples; do
@@ -309,19 +346,19 @@ if [ "$PARALLEL_SAMPLES" = true ]; then
             # Step 2: Reference alignment (second pass - using metaconsensus)
             echo "  Starting reference alignment for $sample (second pass)"
             (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
             echo "  Completed reference alignment for $sample (second pass)"
             
             # Step 3: Variant calling (second pass)
             echo "  Starting variant calling for $sample (second pass)"
             (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
             echo "  Completed variant calling for $sample (second pass)"
             
             # Step 4: Consensus generation (second pass)
             echo "  Starting consensus generation for $sample (second pass)"
             (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
+            bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
             echo "  Completed consensus generation for $sample (second pass)"
             
             # Create "done" marker file
@@ -367,19 +404,19 @@ else
         # Step 2: Reference alignment (second pass - using metaconsensus)
         echo "  Starting reference alignment for $sample (second pass)"
         (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false TRIMMED_DIR=results/trimmed/$sample bash scripts/02_reference_alignment.sh $sample ${BWA_THREADS} ${SAMTOOLS_THREADS}" >> $SECOND_PASS_LOG 2>&1
         echo "  Completed reference alignment for $sample (second pass)"
         
         # Step 3: Variant calling (second pass)
         echo "  Starting variant calling for $sample (second pass)"
         (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false bash scripts/03_variant_calling.sh $sample" >> $SECOND_PASS_LOG 2>&1
         echo "  Completed variant calling for $sample (second pass)"
         
         # Step 4: Consensus generation (second pass)
         echo "  Starting consensus generation for $sample (second pass)"
         (echo "==== Processing sample: $sample (second pass) ====" >> $SECOND_PASS_LOG)
-        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
+        bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && FIRST_PASS=false bash scripts/04_consensus_generation.sh $sample" >> $SECOND_PASS_LOG 2>&1
         echo "  Completed consensus generation for $sample (second pass)"
     done
 fi
@@ -389,5 +426,23 @@ echo "Generating summary plots and analyses"
 (echo "==== Generating summary plots and analyses ====" >> $PLOTS_LOG)
 bash -c "source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate De_Novo_pipeline && bash scripts/06_generate_plots.sh" >> $PLOTS_LOG 2>&1
 echo "Summary plots and analyses complete. Results in results/plots/"
+
+# Step 7: Run primer evaluation (only after second pass is complete)
+echo "Running primer evaluation"
+(echo "==== Running primer evaluation ====" >> $PLOTS_LOG)
+for segment in "S_segment" "M_segment" "L_segment"; do
+    consensus_file="data/references/$segment/metaconsensus.fasta"
+    if [ -f "$consensus_file" ]; then
+        echo "Evaluating primers for $segment..."
+        python3 "scripts/primer_evaluation/evaluate_primers.py" \
+            --primers "data/primers/${segment}_primers.csv" \
+            --segment "$segment" \
+            --consensus "$consensus_file" \
+            --output "results/primer_evaluation"
+    else
+        echo "Skipping $segment - metaconsensus file not found"
+    fi
+done
+echo "Primer evaluation complete. Results in results/primer_evaluation/"
 
 echo "Pipeline completed successfully!" 

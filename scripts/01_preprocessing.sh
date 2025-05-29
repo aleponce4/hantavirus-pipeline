@@ -11,9 +11,34 @@ source ./config.sh
 echo "Preprocessing sample: $sample"
 echo "Using $threads threads"
 
-# Input files
-R1="data/raw_reads/${sample}_R1.fastq.gz"
-R2="data/raw_reads/${sample}_R2.fastq.gz"
+# Input files - handle different naming conventions
+# Try pattern 1: Sample_L001_R1_001.fastq.gz (Illumina convention)
+R1_ILLUMINA="data/raw_reads/${sample}_L001_R1_001.fastq.gz"
+R2_ILLUMINA="data/raw_reads/${sample}_L001_R2_001.fastq.gz"
+
+# Try pattern 2: Sample_R1.fastq.gz (simple convention)
+R1_SIMPLE="data/raw_reads/${sample}_R1.fastq.gz"
+R2_SIMPLE="data/raw_reads/${sample}_R2.fastq.gz"
+
+if [ -f "$R1_ILLUMINA" ] && [ -f "$R2_ILLUMINA" ]; then
+    echo "Using Illumina naming convention"
+    R1="$R1_ILLUMINA"
+    R2="$R2_ILLUMINA"
+elif [ -f "$R1_SIMPLE" ] && [ -f "$R2_SIMPLE" ]; then
+    echo "Using simple naming convention"
+    R1="$R1_SIMPLE"
+    R2="$R2_SIMPLE"
+else
+    echo "ERROR: Could not find FASTQ files for sample $sample"
+    echo "Looked for:"
+    echo "  $R1_ILLUMINA"
+    echo "  $R2_ILLUMINA"
+    echo "  $R1_SIMPLE"
+    echo "  $R2_SIMPLE"
+    exit 1
+fi
+
+echo "Using input files: $R1 and $R2"
 
 # Output files - use environment variable if provided or default location
 OUT_DIR=${OUT_DIR:-"results/$sample/trimmed"}
